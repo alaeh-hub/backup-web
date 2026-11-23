@@ -22,7 +22,7 @@ export function Presets({ onApplied }: { onApplied: () => void }) {
   return (
     <section className="block">
       <h2>Quick pick</h2>
-      <p className="sub">Choose a starting point for the whole PC. You see what it will do before anything changes, and you can adjust afterwards.</p>
+      <p className="sub presets-note">Choose a starting point for the whole PC. You see what it will do before anything changes, and you can adjust afterwards.</p>
       <div className="presets">
         {list.map(p => <button key={p.key} className="preset" onClick={() => preview(p.key)}><b>{p.label}</b><span>{p.desc}</span></button>)}
       </div>

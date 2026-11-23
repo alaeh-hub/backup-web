@@ -1,5 +1,6 @@
 import { api, fmt, Stats } from "./api";
 import { CountUp, Icon, useGrow } from "./ui";
+import { tell } from "./Dialog";
 
 type Go = (t: "settings" | "files" | "review" | "selected") => void;
 const LEG: Record<string, string> = { done: "var(--color-ink-2)", pend: "var(--color-accent)", review: "var(--color-review)", skip: "var(--color-skip)" };
@@ -18,7 +19,7 @@ export function Dashboard({ stats, busy, go, onJob }: { stats: Stats | null; bus
     </section>
   );
   const allDone = stats.backed_files > 0 && stats.pending_files === 0 && stats.review_files === 0;
-  const verify = async () => { try { await api("/api/verify", "POST"); onJob(); } catch (e) { alert("Could not start the check: " + (e as Error).message); } };
+  const verify = async () => { try { await api("/api/verify", "POST"); onJob(); } catch (e) { await tell("Could not start the check: " + (e as Error).message); } };
   const parts = [
     { key: "done", label: "Backed up", bytes: stats.backed_bytes, files: stats.backed_files, cls: "seg-done", go: "selected" as const },
     { key: "pend", label: "Waiting to back up", bytes: stats.pending_bytes, files: stats.pending_files, cls: "seg-pend", go: "selected" as const },

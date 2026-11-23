@@ -17,6 +17,7 @@ const P: Record<string, string> = {
   file: "M6 3h8l4 4v14H6zM14 3v4h4",
   cancel: "M6 6l12 12M18 6L6 18",
   drive: "M4 14l2-8h12l2 8M4 14v4h16v-4M4 14h16M16.5 16.5h.01",
+  chevron: "M6 9l6 6 6-6",
 };
 
 /** A small outlined icon, drawn inline so it follows the text colour. */
