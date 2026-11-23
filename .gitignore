@@ -1,0 +1,25 @@
+# dependencies and build output
+node_modules/
+frontend/dist/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# local state and tool output (never commit)
+.hallmark/
+.env
+*.log
+*.db
+*.tmp
+*.part
+index.json*
+.ala-eh-backup/
+
+# editors and OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store
