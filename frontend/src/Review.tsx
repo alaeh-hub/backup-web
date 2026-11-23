@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Icon } from "./ui";
+import { ask } from "./Dialog";
 import { api, fmt, label, useStored, Explore, FolderRow } from "./api";
 
 interface Item { kind: "folder" | "file"; path: string; name: string; id?: string; files: number; bytes: number; parent?: string }
@@ -73,7 +74,7 @@ export function Review({ onChange, mode = "review" }: { onChange: () => void; mo
     catch { await load(); }
   };
   const all = async (selected: boolean) => {
-    if (chosen && !confirm("Remove every file from the backup list?")) return;
+    if (chosen && !(await ask("Remove every file from the backup list?", "Remove all"))) return;
     setD(x => x && { ...x, items: [], count: 0, files: 0, bytes: 0 });
     try { await api("/api/files/select", "POST", { selected, filter: chosen ? { status: "all", sel: 1 } : { status: "review" } }); onChange(); } catch { await load(); }
   };

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, Settings } from "./api";
 import { PathList } from "./PathList";
+import { Select, TimeField } from "./Select";
 
 let saves: Promise<unknown> = Promise.resolve();   // saves run one after another, and loading waits for them
 
@@ -8,7 +9,14 @@ let saves: Promise<unknown> = Promise.resolve();   // saves run one after anothe
 function NumField({ value, onCommit, max }: { value: number; onCommit: (n: number) => void; max?: number }) {
   const [raw, setRaw] = useState(String(value));
   useEffect(() => { setRaw(String(value)); }, [value]);
-  return <input type="number" min={0} max={max} value={raw} onChange={e => { setRaw(e.target.value); if (e.target.value !== "" && !Number.isNaN(+e.target.value)) onCommit(Math.max(0, +e.target.value)); }} onBlur={() => setRaw(String(value))} />;
+  const step = (d: number) => { const n = Math.max(0, (Number(raw) || 0) + d); setRaw(String(n)); onCommit(n); };
+  return (
+    <div className="num">
+      <input type="number" min={0} max={max} value={raw} onChange={e => { setRaw(e.target.value); if (e.target.value !== "" && !Number.isNaN(+e.target.value)) onCommit(Math.max(0, +e.target.value)); }} onBlur={() => setRaw(String(value))} />
+      <button type="button" aria-label="Decrease" onClick={() => step(-1)}>-</button>
+      <button type="button" aria-label="Increase" onClick={() => step(1)}>+</button>
+    </div>
+  );
 }
 
 const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -41,7 +49,7 @@ export function SettingsTab({ onSaved }: { onSaved: () => void }) {
     <>
       <section className="block">
         <h2>What to scan</h2>
-        <label className="check"><input type="checkbox" checked={s.whole_pc} onChange={e => set({ whole_pc: e.target.checked })} /> Scan the whole PC (every internal drive: {s.scan_roots.join(", ")})</label>
+        <label className="check"><input type="checkbox" checked={s.whole_pc} onChange={e => set({ whole_pc: e.target.checked })} /> Scan the whole PC (every internal drive{s.whole_pc ? ": " + s.scan_roots.join(", ") : ""})</label>
         <p className="sub">Then click Scan files. Turn this off to scan only chosen folders.</p>
       </section>
       {!s.whole_pc && !s.sources.length && <p className="warn">No folders are chosen, so a scan would find nothing. Add a folder below or turn on Scan the whole PC.</p>}
@@ -52,8 +60,7 @@ export function SettingsTab({ onSaved }: { onSaved: () => void }) {
         <p className="sub">Backups go into a folder named after this PC on each drive, so many PCs can share one drive.</p>
         <label className="check"><input type="checkbox" checked={s.skip_junk} onChange={e => set({ skip_junk: e.target.checked })} /> Skip Windows, program files, caches, node_modules, temp and other junk (recommended)</label>
         <details><summary className="sub">Show the built-in junk rules</summary><p className="sub">{s.junk_list.join(", ")}</p></details>
-        <label>When new files appear<select value={s.new_files} onChange={e => set({ new_files: e.target.value as Settings["new_files"] })}>
-          <option value="review">Hold them for review (recommended)</option><option value="include">Back them up automatically</option></select></label>
+        <label>When new files appear<Select label="When new files appear" value={s.new_files} onChange={v => set({ new_files: v as Settings["new_files"] })} options={[{ value: "review", label: "Hold them for review (recommended)" }, { value: "include", label: "Back them up automatically" }]} /></label>
       </section>
       <section className="block">
         <h2>Rules</h2>
@@ -67,7 +74,7 @@ export function SettingsTab({ onSaved }: { onSaved: () => void }) {
         <h2>Scheduled scan</h2>
         <label className="check"><input type="checkbox" checked={s.schedule.enabled} onChange={e => set({ schedule: { ...s.schedule, enabled: e.target.checked } })} /> Scan on a schedule (nothing is copied)</label>
         <div className="fields">
-          <label>Time<input type="time" value={s.schedule.time} onChange={e => set({ schedule: { ...s.schedule, time: e.target.value } })} /></label>
+          <label>Time<TimeField value={s.schedule.time} onChange={v => set({ schedule: { ...s.schedule, time: v } })} /></label>
           <label>Re-scan folders every (minutes, 0 for off)<NumField value={s.auto_scan_minutes} onCommit={n => set({ auto_scan_minutes: n })} /></label>
         </div>
         <div className="days">{days.map((d, i) => <label key={d} className="check"><input type="checkbox" checked={s.schedule.days.includes(i)} onChange={e => set({ schedule: { ...s.schedule, days: e.target.checked ? [...s.schedule.days, i] : s.schedule.days.filter(x => x !== i) } })} /> {d}</label>)}</div>

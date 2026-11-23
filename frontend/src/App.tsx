@@ -10,6 +10,7 @@ import { Organize } from "./Organize";
 import { Logs } from "./Logs";
 import { SettingsTab } from "./SettingsTab";
 import { Icon, Page, reduced } from "./ui";
+import { DialogHost } from "./Dialog";
 import { animate } from "animejs";
 
 type Tab = "dashboard" | "review" | "selected" | "files" | "restore" | "devices" | "organize" | "logs" | "settings";
@@ -87,6 +88,10 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [auth]);
 
+  useEffect(() => {
+    document.querySelector('.nav [aria-current="page"]')?.scrollIntoView({ inline: "center", block: "nearest", behavior: reduced() ? "auto" : "smooth" });
+  }, [tab, auth]);
+
   const busy = job.state === "running";
   const start = async (path: string) => { setMsg(""); try { await api(path, "POST"); await pollJob(); } catch (e) { setMsg("Error: " + (e as Error).message); } };
   const onJob = async () => { setMsg(""); await pollJob(); };
@@ -106,6 +111,7 @@ export default function App() {
 
   return (
     <MotionConfig reducedMotion="user">
+      <DialogHost />
       <div className="app">
         <aside className="side">
           <button className="brand" onClick={() => setTab("dashboard")} aria-label="File Backup, go to the overview">
@@ -153,9 +159,9 @@ export default function App() {
               </AnimatePresence>
             </div>
             <div className="head-actions">
-              {busy && <button onClick={() => api("/api/job/cancel", "POST").catch(e => setMsg("Error: " + (e as Error).message))}><Icon name="cancel" />Cancel</button>}
-              <button onClick={() => start("/api/scan")} disabled={busy}><Icon name="scan" />Scan files</button>
-              <button className="primary" onClick={() => start("/api/backup")} disabled={busy || !stats?.files}><Icon name="backup" />Back up now{stats?.pending_bytes ? ` (${fmt(stats.pending_bytes)})` : ""}</button>
+              {busy && <button onClick={() => api("/api/job/cancel", "POST").catch(e => setMsg("Error: " + (e as Error).message))}><Icon name="cancel" /><span className="hide-sm">Cancel</span></button>}
+              <button aria-label="Scan files" onClick={() => start("/api/scan")} disabled={busy}><Icon name="scan" /><span className="hide-sm">Scan files</span></button>
+              <button className="primary" onClick={() => start("/api/backup")} disabled={busy || !stats?.files}><Icon name="backup" />Back up<span className="hide-sm"> now{stats?.pending_bytes ? ` (${fmt(stats.pending_bytes)})` : ""}</span></button>
             </div>
           </header>
 

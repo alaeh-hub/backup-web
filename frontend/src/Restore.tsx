@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, fmt, useStored, FileRow, Settings } from "./api";
 import { PathPicker } from "./PathList";
+import { Select } from "./Select";
 
 
 export function Restore({ onJob }: { onJob: () => void }) {
@@ -30,7 +31,7 @@ export function Restore({ onJob }: { onJob: () => void }) {
         <h2>Restore files</h2>
         <p className="sub">Pick the files, choose where to put them, then restore. Leave the folder empty to put files back where they came from. Existing files are kept unless you tick overwrite.</p>
         <label>Restore from drive
-          <select value={dest} onChange={e => setDest(e.target.value)}>{dests.map(d => <option key={d}>{d}</option>)}</select>
+          <Select label="Restore from drive" value={dest} onChange={setDest} options={dests.map(d => ({ value: d, label: d }))} />
         </label>
         <label>Restore to folder<PathPicker value={target} onChange={setTarget} /></label>
         <label className="check"><input type="checkbox" checked={overwrite} onChange={e => setOverwrite(e.target.checked)} /> Overwrite files that already exist</label>

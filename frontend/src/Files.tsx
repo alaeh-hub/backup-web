@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { Icon } from "./ui";
+import { Select } from "./Select";
+import { ask } from "./Dialog";
 import { Presets } from "./Presets";
 import { Types } from "./Types";
 import { Biggest } from "./Biggest";
@@ -38,7 +40,7 @@ function FileBrowser({ onChange }: { onChange: () => void }) {
     try { await api("/api/files/select", "POST", { selected: !!selected, ids: [f.id] }); onChange(); } catch { await refresh(); }
   };
   const bulk = async (selected: boolean) => {
-    if (explorer && !cwd && !confirm(selected ? "Choose every scanned file for backup?" : "Skip every scanned file?")) return;
+    if (explorer && !cwd && !(await ask(selected ? "Choose every scanned file for backup?" : "Skip every scanned file?", selected ? "Choose all" : "Skip all"))) return;
     try { await api("/api/files/select", "POST", explorer && cwd ? { selected, prefix: cwd } : { selected, filter: { q, status, ext } }); } catch { /* the refresh below shows the real state */ }
     await refresh();
   };
@@ -65,15 +67,9 @@ function FileBrowser({ onChange }: { onChange: () => void }) {
       )}
       <div className="toolbar">
         <input aria-label="Search files" placeholder="Search by name or folder" value={q} onChange={e => setQ(e.target.value)} />
-        <select aria-label="Status" value={status} onChange={e => setStatus(e.target.value)}>
-          <option value="all">All statuses</option><option value="review">To review (new files)</option><option value="skipped">Skipped (not backed up)</option>{(Object.keys(label) as Status[]).map(s => <option key={s} value={s}>{label[s]}</option>)}
-        </select>
-        <select aria-label="File type" value={ext} onChange={e => setExt(e.target.value)}>
-          <option value="">All types</option>{exts.map(([e, n]) => <option key={e} value={e}>{e} ({n})</option>)}
-        </select>
-        <select aria-label="Sort by" value={sort} onChange={e => setSort(e.target.value)}>
-          <option value="name">Sort by name</option><option value="size">Sort by size</option><option value="mtime">Sort by modified</option><option value="status">Sort by status</option>
-        </select>
+        <Select label="Status" value={status} onChange={setStatus} options={[{ value: "all", label: "All statuses" }, { value: "review", label: "To review (new files)" }, { value: "skipped", label: "Skipped (not backed up)" }, ...(Object.keys(label) as Status[]).map(s => ({ value: s, label: label[s] }))]} />
+        <Select label="File type" value={ext} onChange={setExt} options={[{ value: "", label: "All types" }, ...exts.map(([e, n]) => ({ value: e, label: `${e} (${n})` }))]} />
+        <Select label="Sort by" value={sort} onChange={setSort} options={[{ value: "name", label: "Sort by name" }, { value: "size", label: "Sort by size" }, { value: "mtime", label: "Sort by modified" }, { value: "status", label: "Sort by status" }]} />
         <button onClick={() => setDir(dir === "asc" ? "desc" : "asc")}>{dir === "asc" ? "Ascending" : "Descending"}</button>
       </div>
       <div className="toolbar">
@@ -100,7 +96,7 @@ function FileBrowser({ onChange }: { onChange: () => void }) {
             {ex && !ex.folders.length && !ex.files.length && <li className="sub">Nothing here. Click “Scan files” first.</li>}
           </ul>
           {!!ex?.files.length && (
-            <div className="scroll"><table>
+            <div className="scroll"><table className="ft">
               <thead><tr><th>Back up</th><th>File</th><th>Size</th><th>Modified</th><th>Status</th></tr></thead>
               <tbody>{ex.files.map(f => (
                 <tr key={f.id}>
@@ -113,7 +109,7 @@ function FileBrowser({ onChange }: { onChange: () => void }) {
         </>
       ) : (<>
       <div className="scroll">
-        <table>
+        <table className="ft">
           <thead><tr><th>Back up</th><th>File</th><th>Size</th><th>Modified</th><th>Status</th></tr></thead>
           <tbody>
             {rows.map(f => (
