@@ -168,6 +168,12 @@ td.path { max-width: 420px; display: table-cell; }
 .empty-state h2 { font-size: var(--text-2xl); font-variant-numeric: tabular-nums; }
 
 /* ---------- sign in ---------- */
+.dl { min-height: 100vh; min-height: 100dvh; display: grid; place-content: center; justify-items: center; gap: var(--space-md); padding: var(--space-lg); text-align: center; }
+.dl h1 { margin: 0; }
+.dl p { margin: 0; }
+.dl .logo { width: 88px; height: 88px; }
+.dl-btn { min-height: 56px; padding: 0 var(--space-xl, 32px); font-size: 1.125rem; }
+.dl-note { max-width: 26rem; }
 .login { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: var(--space-lg); }
 .login form { display: grid; gap: var(--space-md); width: min(100%, 24rem); padding: 0; }
 .login .logo { width: 72px; height: 72px; }

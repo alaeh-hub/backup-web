@@ -8,7 +8,7 @@ in `~/.ala-eh-backup` (change with `BACKUP_DATA_DIR`).
 ## Install (Windows)
 
 Download `AlaEhBackup-Setup.exe` from the [latest release](https://github.com/alaeh-hub/backup-web/releases/latest)
-(or use the **Install for Windows** button on the hosted site) and run it. No admin rights are needed. Open
+(or use the **Download for Windows** button on the hosted site, which is only a download page) and run it. No admin rights are needed. Open
 **Ala Eh! File Backup** from the Start Menu: it opens in its own desktop window, with no browser and no console.
 Closing the window stops the app, and scheduled scans only run while it is open.
 
@@ -18,8 +18,8 @@ Closing the window stops the app, and scheduled scans only run while it is open.
   Updates, or with no internet it is simply skipped. You can also run a newer installer over the old one by hand.
   Settings and history are kept in `~/.ala-eh-backup`. Versions older than 1.2.0 cannot update themselves: reinstall once.
 - The installer is not code-signed, so Windows SmartScreen may warn: choose **More info**, then **Run anyway**.
-- The app always runs on the PC it backs up. The Vercel site only hosts the page and the download button; the
-  backend there cannot see your files.
+- The app always runs on the PC it backs up. A deployed site (for example Vercel) shows only the download page,
+  because a server cannot see your files. On `localhost`/`127.0.0.1` (dev server or the installed app) you get the full app.
 
 ## Run from source (development)
 
