@@ -23,3 +23,5 @@ index.json*
 Thumbs.db
 desktop.ini
 .DS_Store
+installer/out/
+installer/work/

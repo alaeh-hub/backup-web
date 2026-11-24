@@ -240,7 +240,7 @@ def test_labels_are_safe_and_unique():
 def test_other_sites_cannot_use_the_api(rig):
     assert rig.client.get("/api/job", headers={"Host": "evil.example:5000"}).status_code == 403
     assert rig.post("/api/scan", headers={"Origin": "http://evil.example"}).status_code == 403
-    assert rig.post("/api/job/cancel", headers={"Origin": "http://127.0.0.1:5173"}).status_code == 204   # the dev page
+    assert rig.post("/api/job/cancel", headers={"Origin": "http://127.0.0.1:5174"}).status_code == 204   # the dev page
     assert rig.post("/api/job/cancel", headers={"Origin": "http://127.0.0.1:3000"}).status_code == 403
 
 

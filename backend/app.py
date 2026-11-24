@@ -9,7 +9,7 @@ Environment variables (all optional):
   BACKUP_HOST       bind address                                [127.0.0.1]
   BACKUP_PORT       port                                        [5000]
 """
-import atexit, csv, fnmatch, gzip, hashlib, hmac, heapq, io, json, os, platform, re, secrets, shutil, string, threading, time, urllib.request, uuid
+import atexit, csv, fnmatch, gzip, hashlib, hmac, heapq, io, json, os, platform, re, secrets, shutil, string, sys, threading, time, urllib.request, uuid
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 from pathlib import Path
@@ -19,7 +19,10 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 ON_VERCEL = bool(os.environ.get("VERCEL"))      # serverless: only /tmp is writable, and it is not persistent
 DATA = Path(os.environ.get("BACKUP_DATA_DIR") or (Path("/tmp") / ".ala-eh-backup" if ON_VERCEL else Path.home() / ".ala-eh-backup"))
 DATA.mkdir(parents=True, exist_ok=True)
-DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if getattr(sys, "frozen", False):                # packaged desktop build: PyInstaller unpacks the UI next to the exe
+    DIST = Path(sys._MEIPASS) / "frontend_dist"
+else:
+    DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 PASSWORD = os.environ.get("BACKUP_PASSWORD", "")
 BIND_HOST = os.environ.get("BACKUP_HOST", "127.0.0.1")
 FLUSH_LOCK = threading.Lock()
@@ -1073,7 +1076,7 @@ TOKENS = set()
 
 
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
-FRONTEND_PORT = int(os.environ.get("FRONTEND_PORT", "5173"))
+FRONTEND_PORT = int(os.environ.get("FRONTEND_PORT", "5174"))
 FAILS = {}
 
 
