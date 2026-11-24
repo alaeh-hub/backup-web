@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, Settings } from "./api";
+import { api, Settings, UpdateInfo } from "./api";
 import { PathList } from "./PathList";
 import { Select, TimeField } from "./Select";
 
@@ -41,6 +41,14 @@ export function SettingsTab({ onSaved }: { onSaved: () => void }) {
   if (loadErr) return <section className="block"><p className="err">Could not load the settings: {loadErr}</p><div><button onClick={() => setAgain(n => n + 1)}>Try again</button></div></section>;
   if (!s) return <p className="sub">Loading...</p>;
   const set = (p: Partial<Settings>) => { const n = { ...s, ...p }; setS(n); change(n, excl); };
+  const [ver, setVer] = useState<UpdateInfo | null>(null);
+  const [checking, setChecking] = useState(false);
+  const checkNow = async () => {
+    setChecking(true);
+    try { setVer(await api<UpdateInfo>("/api/update?force=1")); } catch { /* shown as unchecked */ }
+    setChecking(false);
+  };
+  useEffect(() => { api<UpdateInfo>("/api/update").then(setVer).catch(() => { /* offline */ }); }, []);
   const test = async () => {
     try { await send(); await api("/api/webhook/test", "POST"); setMsg("Test message sent."); }
     catch (e) { setMsg("Error: " + (e as Error).message); }
@@ -88,6 +96,11 @@ export function SettingsTab({ onSaved }: { onSaved: () => void }) {
       <section className="block">
         <h2>Updates</h2>
         <label className="check"><input type="checkbox" checked={s.update_check} onChange={e => set({ update_check: e.target.checked })} /> Check GitHub for a newer version when the app opens (installed app only)</label>
+        <p className="sub">
+          You are on version <b>{ver?.current ?? "..."}</b>.{" "}
+          {ver?.error ? ver.error : ver?.available ? `Version ${ver.latest} is available.` : ver?.enabled === false ? "Update checks are off." : ver ? "This is the latest version." : ""}
+        </p>
+        <div><button onClick={checkNow} disabled={checking || ver?.enabled === false}>{checking ? "Checking..." : "Check for updates now"}</button></div>
         <p className="sub">Nothing is installed without you clicking Update now.</p>
       </section>
       <section className="block">
