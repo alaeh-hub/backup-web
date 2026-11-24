@@ -1,6 +1,6 @@
 # Builds the Windows installer: frontend -> AlaEhBackup.exe (PyInstaller) -> AlaEhBackup-Setup.exe (Inno Setup).
 # Run from the repo root:  powershell -ExecutionPolicy Bypass -File installer\build.ps1
-param([string]$Version = "1.2.3")
+param([string]$Version = "1.2.4")
 $ErrorActionPreference = "Stop"
 $Version = $Version.TrimStart("v")
 $root = Split-Path $PSScriptRoot -Parent
@@ -13,7 +13,7 @@ Write-Host "[2/3] Packaging the app (PyInstaller)"
 # The exe needs to know its own version to compare it with the latest release (see backend/updater.py).
 Set-Content -Path backend/_version.py -Value "VERSION = `"$Version`"" -Encoding ascii
 python -m pip install -q -r backend/requirements.txt -r backend/requirements-desktop.txt pyinstaller
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name AlaEhBackup `
+python -m PyInstaller --noconfirm --clean --onefile --windowed --name AlaEhBackup --icon "$root\installer\app.ico" --add-data "$root\installer\app.ico;." `
   --paths backend --add-data "$root\frontend\dist;frontend_dist" `
   --distpath installer/out --workpath installer/work --specpath installer/work `
   backend/desktop.py

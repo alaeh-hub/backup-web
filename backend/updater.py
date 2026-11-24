@@ -4,7 +4,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 REPO = "alaeh-hub/backup-web"
-API = f"https://api.github.com/repos/{REPO}/releases/latest"
+API = f"https://api.github.com/repos/{REPO}/releases"
 ASSET = "AlaEhBackup-Setup.exe"
 PAGE = f"https://github.com/{REPO}/releases/latest"
 TRUSTED = ("github.com", "githubusercontent.com")          # the installer may only come from GitHub
@@ -12,11 +12,12 @@ TRUSTED = ("github.com", "githubusercontent.com")          # the installer may o
 
 def current_version():
     """The version baked into the exe at build time, else frontend/package.json (running from source)."""
-    try:
-        from _version import VERSION                      # written by installer/build.ps1, not committed
-        return VERSION
-    except ImportError:
-        pass
+    if getattr(sys, "frozen", False):
+        try:
+            from _version import VERSION                  # written by installer/build.ps1, not committed
+            return VERSION
+        except ImportError:
+            pass                                          # (running from source ignores a stale leftover file)
     try:
         pkg = Path(__file__).resolve().parent.parent / "frontend" / "package.json"
         return str(json.loads(pkg.read_text("utf8")).get("version", "0.0.0"))
@@ -40,18 +41,33 @@ def trusted(url):
 
 
 def fetch_latest(opener=urllib.request.urlopen):
-    """The newest published release: {version, page, notes, url, size, sha256} (url is None without the installer)."""
-    req = urllib.request.Request(API, headers={"Accept": "application/vnd.github+json", "User-Agent": "ala-eh-backup-updater"})
+    """The release with the highest version number that has the installer: {version, page, notes, url, size, sha256}.
+    GitHub's own "latest" is the most recently published one, which is not always the highest version, and a PC that
+    skipped versions must still jump straight to the newest."""
+    req = urllib.request.Request(API + "?per_page=30", headers={"Accept": "application/vnd.github+json", "User-Agent": "ala-eh-backup-updater"})
     with opener(req, timeout=8) as r:
-        data = json.loads(r.read().decode("utf8"))
-    asset = next((a for a in data.get("assets", []) if a.get("name") == ASSET), None)
-    digest = str((asset or {}).get("digest") or "")
+        releases = json.loads(r.read().decode("utf8"))
+    best = None
+    for data in releases if isinstance(releases, list) else []:
+        if data.get("draft") or data.get("prerelease"):
+            continue
+        asset = next((a for a in data.get("assets", []) if a.get("name") == ASSET), None)
+        ver = str(data.get("tag_name", "")).lstrip("vV")
+        if not asset or not re.fullmatch(r"\d+(\.\d+){0,2}", ver):
+            continue
+        if best is None or parse(ver) > parse(best[0]):
+            best = (ver, data, asset)
+    if not best:
+        raise RuntimeError("No release with an installer found.")
+    ver, data, asset = best
+    digest = str(asset.get("digest") or "")
+    url = asset.get("browser_download_url")
     return {
-        "version": str(data.get("tag_name", "")).lstrip("vV"),
+        "version": ver,
         "page": data.get("html_url") if trusted(str(data.get("html_url", ""))) else PAGE,
         "notes": str(data.get("body") or "")[:2000],
-        "url": asset.get("browser_download_url") if asset and trusted(str(asset.get("browser_download_url", ""))) else None,
-        "size": int((asset or {}).get("size") or 0),
+        "url": url if trusted(str(url or "")) else None,
+        "size": int(asset.get("size") or 0),
         "sha256": digest.split(":", 1)[1].lower() if digest.startswith("sha256:") else "",
     }
 
