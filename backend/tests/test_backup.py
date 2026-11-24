@@ -320,7 +320,8 @@ def test_update_installer_kills_leftover_wrapper_first(monkeypatch):
     monkeypatch.setattr(updater.subprocess, "Popen", lambda cmd, **kw: seen.update(cmd=cmd))
     updater.run_installer(r"C:	mp\AlaEhBackup-Setup.exe")
     cmd = seen["cmd"]
-    assert "taskkill /F /T /IM" in cmd and cmd.index("taskkill") < cmd.index("AlaEhBackup-Setup.exe")
+    assert "taskkill /F /IM" in cmd and cmd.index("taskkill") < cmd.index("AlaEhBackup-Setup.exe")
+    assert " /T " not in cmd          # /T would kill the helper too: it is a child of the app
     assert "/SILENT" in cmd
 
 
