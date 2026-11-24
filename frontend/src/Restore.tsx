@@ -7,20 +7,29 @@ import { Select } from "./Select";
 export function Restore({ onJob }: { onJob: () => void }) {
   const [dests, setDests] = useState<string[]>([]); const [dest0, setDest] = useStored("restore.dest", "");
   const dest = dests.includes(dest0) ? dest0 : dests[0] ?? "";
-  const [q, setQ] = useState(""); const [rows, setRows] = useState<FileRow[]>([]); const [total, setTotal] = useState(0);
+  const [q, setQ] = useState(""); const [rows, setRows] = useState<FileRow[]>([]); const [total, setTotal] = useState(0); const [more, setMore] = useState(false);
   const [pick, setPick] = useState<Set<string>>(new Set()); const [target, setTarget] = useStored("restore.target", ""); const [overwrite, setOverwrite] = useStored("restore.overwrite", false);
   const [err, setErr] = useState("");
   useEffect(() => { api<Settings>("/api/settings").then(s => setDests(s.destinations)); }, []);
+  const page = (offset: number) => api<{ rows: FileRow[]; total: number }>(`/api/files?status=has_backup&dest=${encodeURIComponent(dest)}&q=${encodeURIComponent(q)}&limit=200&offset=${offset}`);
   useEffect(() => {
+    if (!dest) return;
     let stale = false;
+    setPick(new Set());                                // a file picked for another drive may not exist on this one
     const t = setTimeout(async () => {
       try {
-        const p = await api<{ rows: FileRow[]; total: number }>(`/api/files?status=has_backup&q=${encodeURIComponent(q)}&limit=200`);
+        const p = await page(0);
         if (!stale) { setRows(p.rows); setTotal(p.total); }
       } catch (e) { if (!stale) setErr((e as Error).message); }
     }, 250);
     return () => { stale = true; clearTimeout(t); };
-  }, [q]);
+  }, [q, dest]);
+  const showMore = async () => {
+    setMore(true);
+    try { const p = await page(rows.length); setRows(r => [...r, ...p.rows.filter(x => !r.some(y => y.id === x.id))]); setTotal(p.total); }
+    catch (e) { setErr((e as Error).message); }
+    setMore(false);
+  };
   const flip = (id: string) => setPick(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const go = async (items: { id: string; dest: string }[]) => {
     try { setErr(""); await api("/api/restore", "POST", { items, target, overwrite }); onJob(); } catch (e) { setErr((e as Error).message); }
@@ -38,7 +47,7 @@ export function Restore({ onJob }: { onJob: () => void }) {
         {err && <p className="err">{err}</p>}
         <div><button className="primary" disabled={!pick.size || !dest} onClick={() => go([...pick].map(id => ({ id, dest })))}>Restore {pick.size} selected</button></div>
       </section>
-      <div className="toolbar"><input aria-label="Search backed up files" placeholder="Search backed up files" value={q} onChange={e => setQ(e.target.value)} /><span className="sub">{total.toLocaleString()} files with a backup</span></div>
+      <div className="toolbar"><input aria-label="Search backed up files" placeholder="Search backed up files" value={q} onChange={e => setQ(e.target.value)} /><span className="sub">{total.toLocaleString()} files with a backup on this drive</span></div>
       <ul className="rows">
         {rows.map(f => (
           <li key={f.id}>
@@ -49,6 +58,7 @@ export function Restore({ onJob }: { onJob: () => void }) {
           </li>
         ))}
       </ul>
+      {rows.length < total && <div><button onClick={showMore} disabled={more}>{more ? "Loading..." : `Show more (${(total - rows.length).toLocaleString()} more)`}</button></div>}
     </>
   );
 }

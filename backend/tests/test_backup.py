@@ -165,12 +165,10 @@ def test_an_interrupted_copy_keeps_the_old_backup(rig, monkeypatch):
     bump(p)
     backup.scan_job()
 
-    def boom(src, dst, **kw):
-        with open(dst, "w") as f:
-            f.write("partial")
+    def boom(src, dst, **kw):          # the copy is written, then the drive fails while it is being finished
         raise OSError("disk full")
 
-    monkeypatch.setattr(shutil, "copy2", boom)
+    monkeypatch.setattr(shutil, "copystat", boom)
     backup.backup_job()
     monkeypatch.undo()
     assert target.read_text() == "good copy"
@@ -307,7 +305,7 @@ def test_update_download_checks_integrity(tmp_path, monkeypatch):
     ok = {"url": "https://github.com/a/b/releases/download/v1/AlaEhBackup-Setup.exe", "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
     path = updater.download(ok, opener=lambda req, timeout: Resp(data, ok["url"]))
     assert path.read_bytes() == data
-    for bad in ({**ok, "sha256": "0" * 64}, {**ok, "size": 3}):
+    for bad in ({**ok, "sha256": "0" * 64}, {**ok, "size": 3}, {**ok, "sha256": ""}, {**ok, "size": 0}):
         with pytest.raises(RuntimeError):
             updater.download(bad, opener=lambda req, timeout: Resp(data, ok["url"]))
     with pytest.raises(RuntimeError):                                    # redirected off GitHub
@@ -320,7 +318,8 @@ def test_update_installer_kills_leftover_wrapper_first(monkeypatch):
     monkeypatch.setattr(updater.subprocess, "Popen", lambda cmd, **kw: seen.update(cmd=cmd))
     updater.run_installer(r"C:	mp\AlaEhBackup-Setup.exe")
     cmd = seen["cmd"]
-    assert "taskkill /F /T /IM" in cmd and cmd.index("taskkill") < cmd.index("AlaEhBackup-Setup.exe")
+    assert "taskkill /F /IM" in cmd and cmd.index("taskkill") < cmd.index("AlaEhBackup-Setup.exe")
+    assert " /T " not in cmd          # /T would kill the helper too: it is a child of the app
     assert "/SILENT" in cmd
 
 
@@ -358,3 +357,93 @@ def test_current_version_ignores_stale_stamp_when_running_from_source(monkeypatc
 def test_status_reports_version_for_the_desktop_launcher(rig):
     import updater
     assert rig.get("/api/auth/status").json["version"] == updater.current_version()
+
+
+# ---------------------------------------------------------------- audit fixes
+
+def test_vercel_api_is_closed_without_a_password(rig, monkeypatch):
+    monkeypatch.setattr(backup, "ON_VERCEL", True)
+    r = rig.get("/api/stats")
+    assert r.status_code == 403 and "download page" in r.json["error"]
+    assert rig.post("/api/settings", {}).status_code == 403
+    assert rig.get("/api/auth/status").status_code == 403            # nothing under /api answers there
+
+
+def test_same_size_same_date_edit_is_caught_by_the_content_check(rig, monkeypatch):
+    p = rig.write("a.txt", "aaaa")
+    backup.scan_job()
+    rig.choose_all()
+    backup.backup_job()
+    st = os.stat(p)
+    p.write_text("bbbb")
+    os.utime(p, (st.st_atime, st.st_mtime))                          # a different file with the same size and date
+    backup.scan_job()
+    assert "Everything is already backed up" in backup.backup_job()  # default: size and date only (fast)
+    assert rig.drive_copy("a.txt").read_text() == "aaaa"
+    monkeypatch.setitem(backup.SETTINGS, "deep_check", True)
+    backup.backup_job()
+    assert rig.drive_copy("a.txt").read_text() == "bbbb"
+    assert "Everything is already backed up" in backup.backup_job()  # and then it is current again
+
+
+def test_a_file_that_changes_while_it_is_copied_is_refused(rig, tmp_path):
+    import hashlib
+    p = rig.write("a.txt", "hello")
+    backup.scan_job()
+    f = next(iter(backup.INDEX.values()))
+    part = tmp_path / "out.part"
+    assert backup.copy_hashed(f, part, False) == hashlib.sha256(b"hello").hexdigest()   # hash of the bytes copied
+    assert part.read_bytes() == b"hello"
+    p.write_text("hello world")                                      # edited after it was measured
+    with pytest.raises(RuntimeError, match="changed while"):
+        backup.copy_hashed(f, part, False)
+
+
+def test_overlapping_scan_roots_keep_the_backup_reachable(rig, monkeypatch):
+    rig.write("Docs/a.txt", "x")
+    monkeypatch.setitem(backup.SETTINGS, "sources", [str(rig.src), str(rig.src / "Docs")])
+    backup.scan_job()
+    assert len(backup.INDEX) == 1                                    # one file, not two records
+    rig.choose_all()
+    backup.backup_job()
+    f = next(iter(backup.INDEX.values()))
+    where = (f["label"], f["rel"])
+    monkeypatch.setitem(backup.SETTINGS, "sources", [str(rig.src / "Docs"), str(rig.src)])     # roots reordered
+    backup.scan_job()
+    f = next(iter(backup.INDEX.values()))
+    assert (f["label"], f["rel"]) == where                           # still filed where its copy is
+    path, _ = backup.find_backup(str(rig.dest), f)
+    assert path and path.exists() and backup.status(f, [str(rig.dest)]) == "backed_up"
+
+
+def test_a_source_inside_the_backup_drive_is_refused(rig):
+    base = rig.get("/api/settings").json
+    for src in (rig.dest, rig.dest / "stuff"):
+        r = rig.post("/api/settings", {**base, "sources": [str(src)], "destinations": [str(rig.dest)]})
+        assert r.status_code == 400 and "outside" in r.json["error"]
+    ok = rig.post("/api/settings", {**base, "sources": [str(rig.root)], "destinations": [str(rig.dest)]})
+    assert ok.status_code == 200                                     # the drive inside a scanned folder is fine: it is skipped
+
+
+def test_restore_only_lists_files_that_are_on_the_chosen_drive(rig, monkeypatch):
+    rig.write("a.txt", "x")
+    backup.scan_job()
+    rig.choose_all()
+    backup.backup_job()                                              # backed up to dest only
+    other = rig.root / "other-drive"
+    other.mkdir()
+    monkeypatch.setitem(backup.SETTINGS, "destinations", [str(rig.dest), str(other)])
+    here = rig.get("/api/files", query_string={"status": "has_backup", "dest": str(rig.dest)}).json
+    there = rig.get("/api/files", query_string={"status": "has_backup", "dest": str(other)}).json
+    assert here["total"] == 1 and there["total"] == 0
+    assert rig.get("/api/files?status=has_backup").json["total"] == 1
+
+
+def test_organize_does_not_reread_its_own_output(rig, monkeypatch, tmp_path):
+    target = tmp_path / "organized"
+    (target / "Documents" / "2026").mkdir(parents=True)
+    (target / "Documents" / "2026" / "x.pdf").write_text("x")
+    monkeypatch.setattr(backup, "organize_roots", lambda scope: [str(target)])     # the target is itself a scanned folder
+    for _ in range(2):
+        assert "0 copied" in backup.organize_job("personal", str(target))
+    assert sorted(p.name for p in (target / "Documents" / "2026").iterdir()) == ["x.pdf"]

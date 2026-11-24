@@ -78,6 +78,8 @@ def download(release, opener=urllib.request.urlopen):
         raise RuntimeError("This release has no installer attached.")
     for old in Path(tempfile.gettempdir()).glob("ala-eh-update-*"):       # leftovers of earlier updates
         shutil.rmtree(old, ignore_errors=True)
+    if not release.get("size") or not release.get("sha256"):
+        raise RuntimeError("This release has no size or SHA-256 checksum to verify, so it was not installed.")
     folder = Path(tempfile.mkdtemp(prefix="ala-eh-update-"))
     path = folder / ASSET
     req = urllib.request.Request(release["url"], headers={"User-Agent": "ala-eh-backup-updater"})
@@ -96,12 +98,14 @@ def download(release, opener=urllib.request.urlopen):
     return path
 
 
-def run_installer(path):
+def run_installer(path, exe=None):
     """Hand over to a detached helper: it waits for this app to answer the browser, kills every AlaEhBackup.exe
     (the PyInstaller exe is a wrapper plus the app, and a leftover wrapper would lock the file the installer
-    replaces), then runs the installer silently. The installer reopens the app when it is done."""
+    replaces), then runs the installer silently. The installer reopens the app when it is done.
+    No /T on taskkill: this helper is a CHILD of the app, and killing the process tree would kill the helper itself
+    before it starts the installer (this is exactly what broke the 1.2.3-1.2.5 updates)."""
     flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    exe = Path(sys.executable).name if getattr(sys, "frozen", False) else "AlaEhBackup.exe"
-    steps = (f'ping -n 4 127.0.0.1 >nul & taskkill /F /T /IM "{exe}" >nul 2>&1 & ping -n 3 127.0.0.1 >nul & '
+    exe = exe or (Path(sys.executable).name if getattr(sys, "frozen", False) else "AlaEhBackup.exe")
+    steps = (f'ping -n 4 127.0.0.1 >nul & taskkill /F /IM "{exe}" >nul 2>&1 & ping -n 3 127.0.0.1 >nul & '
              f'"{path}" /SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS')
     subprocess.Popen(f'cmd.exe /d /s /c "{steps}"', creationflags=flags, close_fds=True)

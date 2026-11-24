@@ -61,6 +61,7 @@ DEFAULTS = {
     "schedule": {"enabled": False, "time": "22:00", "days": [0, 1, 2, 3, 4, 5, 6]},
     "auto_scan_minutes": 0,
     "webhook": "",
+    "deep_check": False,    # also compare contents of files whose size and date did not change (slower)
     "update_check": True,   # installed app: look for a newer release on GitHub
 }
 SETTINGS = {**DEFAULTS, **read_json("settings.json", {})}
@@ -603,6 +604,7 @@ def scan_job():
         root = Path(src)
         nsrc = os.path.normcase(os.path.abspath(src))
         if any(nsrc == d or nsrc.startswith(d.rstrip(os.sep) + os.sep) for d in skipdirs):
+            log("warn", "scan", f"Skipped {src}: it is the backup drive or a folder inside it. Choose a folder outside the backup location.")
             continue                      # the backup drive, or a folder inside it, is never scanned
         if not root.is_dir():
             log("warn", "scan", f"Source not found, keeping its old list: {src}")
@@ -643,8 +645,12 @@ def scan_job():
                     i = fid_of(p)
                     while i in new and new[i]["path"] != p:        # two paths with the same short id
                         i = hashlib.sha1((i + p).encode("utf8", "surrogatepass")).hexdigest()[:12]
+                    if i in new:
+                        continue                       # the same file under two overlapping folders: the first one wins
                     old = INDEX.get(i)
-                    new[i] = {"id": i, "path": p, "src": src, "label": label, "rel": rel,
+                    keep = bool(old and old.get("backed"))      # its copy is filed under the old label and path: keep them
+                    new[i] = {"id": i, "path": p, "src": src, "label": old["label"] if keep else label,
+                              "rel": old["rel"] if keep else rel,
                               "size": st.st_size, "mtime": st.st_mtime,
                               "selected": old["selected"] if old else int(auto),
                               "reviewed": old.get("reviewed", True) if old else auto,
@@ -676,6 +682,26 @@ def scan_job():
     return msg
 
 
+def copy_hashed(f, part, gz):
+    """Copy the source to `part` and return the SHA-256 of the bytes actually copied. A file that changed while it was
+    read is refused, so a half-edited copy is never recorded as backed up."""
+    src = f["path"]
+    before = os.stat(src)
+    sha = hashlib.sha256()
+    with open(src, "rb") as s, (gzip.open(part, "wb", compresslevel=6) if gz else open(part, "wb")) as o:
+        for chunk in iter(lambda: s.read(1 << 20), b""):
+            sha.update(chunk)
+            o.write(chunk)
+    after = os.stat(src)
+    if (after.st_size, after.st_mtime) != (before.st_size, before.st_mtime) or (before.st_size, before.st_mtime) != (f["size"], f["mtime"]):
+        raise RuntimeError("the file changed while it was being backed up; it will be tried again on the next backup")
+    if gz:
+        os.utime(part, (time.time(), f["mtime"]))
+    else:
+        shutil.copystat(src, part)
+    return sha.hexdigest()
+
+
 def copy_to(dest, f, h):
     gz = SETTINGS["compress"]
     tgt = target_of(dest, f, gz)
@@ -685,12 +711,7 @@ def copy_to(dest, f, h):
         archive_version(dest, f, tgt, keep)
     part = tgt.with_name(tgt.name + ".part")
     try:
-        if gz:
-            with open(f["path"], "rb") as s, gzip.open(part, "wb", compresslevel=6) as o:
-                shutil.copyfileobj(s, o, 1 << 20)
-            os.utime(part, (time.time(), f["mtime"]))
-        else:
-            shutil.copy2(f["path"], part)
+        h = copy_hashed(f, part, gz)          # the hash of what was really written, not of an earlier read
         os.replace(part, tgt)
     finally:
         part.unlink(missing_ok=True)
@@ -708,6 +729,24 @@ def record(f, dest, h):
         f["backed"][dest] = {"hash": h, "size": f["size"], "mtime": f["mtime"],
                              "at": datetime.now().isoformat(sep=" ", timespec="seconds")}
         mark()
+
+
+def deep_changed(ds, already):
+    """Chosen files that look unchanged (same size and date) but whose content no longer matches what was backed up."""
+    with LOCK:
+        cand = [f for f in INDEX.values() if f["selected"] and f["id"] not in already and status(f, ds) == "backed_up"]
+    job_set(total=len(cand), done=0, message="Comparing file contents...")
+    out = []
+    for n, f in enumerate(cand, 1):
+        check_cancel()
+        try:
+            h = hash_file(f["path"])
+        except OSError:
+            continue
+        if any(f["backed"][d].get("hash") != h for d in ds):
+            out.append(f)
+        job_set(done=n, message=f"Comparing contents: {n} of {len(cand)} files")
+    return out
 
 
 def backup_job(trigger="manual", scan_first=False):
@@ -730,6 +769,8 @@ def backup_job(trigger="manual", scan_first=False):
         pc_folder(d, create=True)
     with LOCK:
         todo = [f for f in INDEX.values() if is_pending(f, ds)]
+    if SETTINGS.get("deep_check"):
+        todo += deep_changed(ds, {f["id"] for f in todo})
     if not todo:
         msg = "Everything is already backed up. Nothing new or changed to copy."
         log("info", "backup", msg)
@@ -942,6 +983,9 @@ def organize_job(scope, target):
     allowed = {e: c for e, c in EXT_CAT.items() if not (scope == "pc" and c == "Code")}
     todo, ignored = [], 0
     for root in organize_roots(scope):
+        rnorm = os.path.normcase(os.path.abspath(root))
+        if rnorm == tnorm or rnorm.startswith(tnorm.rstrip(os.sep) + os.sep):
+            continue                      # the target is (inside) a scanned folder: its own output is not new input
         for dp, dirs, names in os.walk(root):
             check_cancel()
             dirs[:] = [d for d in dirs if d.lower() not in SKIP_DIRS and not d.startswith(("$", "."))
@@ -1086,6 +1130,8 @@ FAILS = {}
 @app.before_request
 def origin_guard():
     """Only this PC's own pages may use the API: stops other web sites (DNS rebinding, cross-site forms)."""
+    if ON_VERCEL and not PASSWORD and request.path.startswith("/api/"):
+        return jsonify(error="This deployment only serves the download page. Run the app on your own PC."), 403
     if BIND_HOST not in ("0.0.0.0", "::") and not ON_VERCEL:
         host = (urlsplit("//" + (request.host or "")).hostname or "").lower()
         if host not in LOOPBACK_HOSTS and host != BIND_HOST.lower():
@@ -1154,6 +1200,12 @@ def clean_settings(b):
         return os.path.normpath(x)
     paths = lambda k: list(dict.fromkeys(p for p in (clean_path(x) for x in b.get(k, [])) if p))
     s["sources"], s["destinations"] = paths("sources"), paths("destinations")
+    for src in s["sources"]:
+        ns = os.path.normcase(os.path.abspath(src))
+        for d in s["destinations"]:
+            nd = os.path.normcase(os.path.abspath(d))
+            if ns == nd or ns.startswith(nd.rstrip(os.sep) + os.sep):
+                raise ValueError(f"The folder to scan {src} is the backup location {d} or inside it. Choose a folder outside it.")
     s["excludes"] = [str(x).strip() for x in b.get("excludes", []) if str(x).strip()]
     s["whole_pc"] = bool(b.get("whole_pc", True))
     s["skip_junk"] = bool(b.get("skip_junk", True))
@@ -1172,6 +1224,7 @@ def clean_settings(b):
         raise ValueError("Webhook must start with http:// or https://")
     s["webhook"] = w
     s["update_check"] = bool(b.get("update_check", True))
+    s["deep_check"] = bool(b.get("deep_check"))
     return s
 
 
@@ -1358,6 +1411,7 @@ def filtered(a):
     q, st, ext = (a.get("q") or "").lower(), a.get("status") or "all", (a.get("ext") or "").lower()
     cat = a.get("cat") or ""
     a_sel = bool(a.get("sel"))
+    dest = a.get("dest") or ""
     out = []
     with LOCK:
         files = list(INDEX.values())
@@ -1381,7 +1435,7 @@ def filtered(a):
             if f["selected"] or rv:
                 continue
         elif st == "has_backup":
-            if not f["backed"]:
+            if not f["backed"] or (dest and dest not in f["backed"]):
                 continue
         elif st != "all" and s != st:
             continue
