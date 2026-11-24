@@ -5,7 +5,19 @@ back up, and copies the chosen files to an external drive. Several PCs can share
 own folder. Nothing leaves the machine and there is no database; settings and the file list are JSON files
 in `~/.ala-eh-backup` (change with `BACKUP_DATA_DIR`).
 
-## Run
+## Install (Windows)
+
+Download `AlaEhBackup-Setup.exe` from the [latest release](https://github.com/alaeh-hub/backup-web/releases/latest)
+(or use the **Install for Windows** button on the hosted site) and run it. No admin rights are needed. Open
+**Ala Eh! File Backup** from the Start Menu: it opens in its own desktop window, with no browser and no console.
+Closing the window stops the app, and scheduled scans only run while it is open.
+
+- To update, run the newer installer over the old one. Settings and history are kept in `~/.ala-eh-backup`.
+- The installer is not code-signed, so Windows SmartScreen may warn: choose **More info**, then **Run anyway**.
+- The app always runs on the PC it backs up. The Vercel site only hosts the page and the download button; the
+  backend there cannot see your files.
+
+## Run from source (development)
 
 Needs Python 3.12 or newer and Node.js 20 or newer.
 
@@ -15,7 +27,7 @@ On first run this installs the Python and npm packages, starts the backend (http
 frontend (http://127.0.0.1:5174), and opens the browser. Ctrl+C stops both. `NO_BROWSER=1` skips opening the
 browser and `FRONTEND_PORT` changes the frontend port.
 
-Open the app at `localhost` or `127.0.0.1`. Other host names are refused on purpose.
+In this mode the app opens in your browser. Open the app at `localhost` or `127.0.0.1`. Other host names are refused on purpose.
 
 ## How it works
 
@@ -59,6 +71,27 @@ Other parts:
     npm ci
     npm run dev        # http://localhost:5174, proxies /api to the backend on 5000
     npm run build      # type check and production build into frontend/dist
+
+### Building the installer
+
+    powershell -ExecutionPolicy Bypass -File installeruild.ps1
+
+Needs Node.js, Python 3.12+ and [Inno Setup 6](https://jrsoftware.org/isinfo.php). It builds the frontend,
+packs the app with PyInstaller (`backend/desktop.py`, a native window via pywebview; desktop-only packages are
+in `backend/requirements-desktop.txt`) and writes `installer/out/AlaEhBackup-Setup.exe`.
+
+### Releasing
+
+Work on a branch and open a pull request; do not push to `main` directly. Bump the version in
+`frontend/package.json`, `installer/setup.iss` and `installer/build.ps1`. After the PR is merged, tag it:
+
+    git tag vX.Y.Z
+    git push origin vX.Y.Z
+
+`.github/workflows/release.yml` then builds the installer on Windows and publishes `AlaEhBackup-Setup.exe` and
+`AlaEhBackup.exe` as a GitHub Release. See `AGENTS.md` for the rules AI assistants follow in this repo.
+
+### Continuous integration
 
 Continuous integration (`.github/workflows/ci.yml`) runs the backend tests on Linux and Windows, and the
 frontend type check, build and a dependency audit, on every push to `main` and every pull request.
