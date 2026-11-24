@@ -1,7 +1,7 @@
 ; Inno Setup script: installs AlaEhBackup.exe per-user (no admin rights needed).
 ; ExeName / AppIdGuid can be overridden (/DExeName=... /DAppIdGuid=...) to test an install without touching a real one.
 #ifndef AppVersion
-  #define AppVersion "1.2.4"
+  #define AppVersion "1.2.5"
 #endif
 #ifndef ExeName
   #define ExeName "AlaEhBackup.exe"
