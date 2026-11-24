@@ -1,7 +1,7 @@
 """Ala Eh! File Backup: a local backup tool. No database; everything lives on disk.
 
 State (settings, file index, history, logs) is stored as JSON files in BACKUP_DATA_DIR
-(default: ~/.ala-eh-backup). Backups are plain copies (or .gz) on the destination drives.
+(default: ~/.ala-eh-backup). Backups are plain copies (or .gz/.zip/.bz2/.xz/.7z) on the destination drives.
 
 Environment variables (all optional):
   BACKUP_DATA_DIR   where the tool keeps its own state          [~/.ala-eh-backup]
@@ -9,7 +9,7 @@ Environment variables (all optional):
   BACKUP_HOST       bind address                                [127.0.0.1]
   BACKUP_PORT       port                                        [5000]
 """
-import atexit, csv, fnmatch, gzip, hashlib, hmac, heapq, io, json, os, platform, re, secrets, shutil, string, sys, threading, time, urllib.request, uuid
+import atexit, bz2, contextlib, csv, fnmatch, gzip, lzma, tarfile, tempfile, zipfile, hashlib, hmac, heapq, io, json, os, platform, re, secrets, shutil, string, sys, threading, time, urllib.request, uuid
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 from pathlib import Path
@@ -56,12 +56,14 @@ DEFAULTS = {
     "new_files": "review",
     "max_size_mb": 0,
     "versions": 0,          # no older copies: a changed file simply replaces its backup
-    "compress": False,
+    "compress": "none",     # none | gz | zip | bz2 | xz | 7z (one archive per file)
     "schedule": {"enabled": False, "time": "22:00", "days": [0, 1, 2, 3, 4, 5, 6]},
     "auto_scan_minutes": 0,
     "webhook": "",
 }
 SETTINGS = {**DEFAULTS, **read_json("settings.json", {})}
+if SETTINGS["compress"] is True:                # older settings stored a bool
+    SETTINGS["compress"] = "gz"
 SETTINGS["versions"] = 0           # an older setting of 3 is ignored: the new copy replaces the old one
 INDEX = read_json("index.json", {})
 GONE = read_json("gone.json", {})        # files deleted from the PC that still have a backup copy, so they can be restored       # id -> file record
@@ -358,8 +360,155 @@ def hash_stream(fh):
     return h.hexdigest()
 
 
-def hash_file(path, gz=False):
-    with (gzip.open(path, "rb") if gz else open(path, "rb")) as fh:
+# ---- archive formats. With compression on, one backup run writes ONE archive per drive holding every
+# file of that run (folder structure kept inside), so a whole folder is a single file on the drive.
+# Restore and Verify read single members back out. RAR is not offered: only WinRAR can create it.
+try:
+    import py7zr
+except ImportError:
+    py7zr = None
+
+CODECS = {"none": "", "gz": ".gz", "zip": ".zip", "bz2": ".bz2", "xz": ".xz", "7z": ".7z"}   # older per-file copies
+BUNDLE_EXT = {"zip": ".zip", "7z": ".7z", "gz": ".tar.gz", "bz2": ".tar.bz2", "xz": ".tar.xz"}
+CODEC_LABELS = {"none": "None (plain copies, fastest)", "zip": "Zip (.zip, opens anywhere)",
+                "7z": "7-Zip (.7z, best compression)", "gz": "Tar + Gzip (.tar.gz)",
+                "bz2": "Tar + Bzip2 (.tar.bz2, smaller, slower)", "xz": "Tar + XZ (.tar.xz, small, slow)"}
+ARC_DIR = "_archives"
+
+
+def codec_ok(c):
+    return c in CODECS and (c != "7z" or py7zr is not None)
+
+
+def codec_list():
+    order = ["none", "zip", "7z", "gz", "bz2", "xz"]
+    return [{"id": c, "label": CODEC_LABELS[c] + ("" if codec_ok(c) else " - not installed"), "available": codec_ok(c)}
+            for c in order]
+
+
+def current_codec():
+    c = SETTINGS.get("compress")
+    return "gz" if c is True else (c if codec_ok(c) else "none")
+
+
+def archive_codec(name):
+    n = str(name).lower()
+    for c, ext in BUNDLE_EXT.items():
+        if n.endswith(ext):
+            return c
+    raise RuntimeError(f"unknown archive type: {name}")
+
+
+def member_name(f):
+    return f"{f['label']}/{f['rel']}".replace("\\", "/")
+
+
+class Bundle:
+    """One archive being written during a backup run."""
+
+    def __init__(self, path, codec):
+        self.path, self.codec, self.n = Path(path), codec, 0
+        self.part = self.path.with_name(self.path.name + ".part")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if codec == "zip":
+            self.w = zipfile.ZipFile(self.part, "w", zipfile.ZIP_DEFLATED, compresslevel=6)
+        elif codec == "7z":
+            if py7zr is None:
+                raise RuntimeError("7z support (py7zr) is not installed")
+            self.w = py7zr.SevenZipFile(self.part, "w")
+        else:
+            self.w = tarfile.open(self.part, "w:" + codec)
+
+    def add(self, src, member):
+        if self.codec == "zip":
+            self.w.write(src, member)
+        elif self.codec == "7z":
+            self.w.write(src, arcname=member)
+        else:
+            self.w.add(src, arcname=member, recursive=False)
+        self.n += 1
+
+    def close(self):
+        """Finish the archive. Returns True when it holds files and is now in place."""
+        try:
+            self.w.close()
+            if self.n:
+                os.replace(self.part, self.path)
+        finally:
+            self.part.unlink(missing_ok=True)
+        return bool(self.n)
+
+
+def read_members(path, codec, wanted):
+    """Yield (member, stream) for each wanted member found in one archive, reading the archive once."""
+    wanted = set(wanted)
+    if codec == "zip":
+        with zipfile.ZipFile(path) as z:
+            names = set(z.namelist())
+            for m in [m for m in wanted if m in names]:
+                with z.open(m) as fh:
+                    yield m, fh
+    elif codec == "7z":
+        if py7zr is None:
+            raise RuntimeError("7z support (py7zr) is not installed")
+        with tempfile.TemporaryDirectory(dir=Path(path).parent) as td:
+            with py7zr.SevenZipFile(path) as z:
+                have = [m for m in z.getnames() if m in wanted]
+                if have:
+                    z.extract(path=td, targets=have)
+            for m in have:
+                with open(Path(td) / m, "rb") as fh:
+                    yield m, fh
+    else:
+        with tarfile.open(path, "r:" + codec) as t:
+            left = set(wanted)
+            for ti in t:
+                if ti.name in left and ti.isfile():
+                    left.discard(ti.name)
+                    fh = t.extractfile(ti)
+                    try:
+                        yield ti.name, fh
+                    finally:
+                        fh.close()
+                    if not left:
+                        break
+
+
+@contextlib.contextmanager
+def open_copy(path, codec):
+    """Open an older single-file copy (made before archives held a whole run) and yield its original bytes."""
+    if codec == "none":
+        with open(path, "rb") as fh:
+            yield fh
+    elif codec == "gz":
+        with gzip.open(path, "rb") as fh:
+            yield fh
+    elif codec == "bz2":
+        with bz2.open(path, "rb") as fh:
+            yield fh
+    elif codec == "xz":
+        with lzma.open(path, "rb") as fh:
+            yield fh
+    elif codec == "zip":
+        with zipfile.ZipFile(path) as z, z.open(z.namelist()[0]) as fh:
+            yield fh
+    elif codec == "7z":
+        if py7zr is None:
+            raise RuntimeError("7z support (py7zr) is not installed")
+        with tempfile.TemporaryDirectory(dir=Path(path).parent) as td:
+            with py7zr.SevenZipFile(path) as z:
+                z.extractall(td)
+            files = [x for x in Path(td).rglob("*") if x.is_file()]
+            if not files:
+                raise RuntimeError("empty 7z archive")
+            with open(files[0], "rb") as fh:
+                yield fh
+    else:
+        raise RuntimeError(f"unknown format {codec}")
+
+
+def hash_file(path, codec="none"):
+    with open_copy(path, codec) as fh:
         return hash_stream(fh)
 
 
@@ -411,18 +560,24 @@ def pc_folder(dest, create=False):
     raise RuntimeError(f"Folder name clash for {PC_NAME} on {dest}")
 
 
-def target_of(dest, f, gz):
+def target_of(dest, f, codec="none"):
     p = Path(dest) / pc_folder(dest) / f["label"] / f["rel"]
-    return p.with_name(p.name + ".gz") if gz else p
+    return p.with_name(p.name + CODECS[codec])
 
 
 def find_backup(dest, f):
-    """Return (path, is_gz) of the copy on `dest`, or (None, False)."""
-    for gz in (SETTINGS["compress"], not SETTINGS["compress"]):
-        p = target_of(dest, f, gz)
-        if p.exists():
-            return p, gz
-    return None, False
+    """Return (path, codec, member) of the copy on `dest`, or (None, "none", None).
+    member is the name inside the run archive, or None for a single-file copy."""
+    b = (f.get("backed") or {}).get(dest) or {}
+    if b.get("arc"):
+        p = Path(dest) / pc_folder(dest) / b["arc"]
+        if p.is_file():
+            return p, archive_codec(p.name), b["member"]
+    for c in CODECS:
+        p = target_of(dest, f, c)
+        if p.is_file():
+            return p, c, None
+    return None, "none", None
 
 
 TS = re.compile(r"\d{8}-\d{6}")
@@ -438,9 +593,10 @@ def version_files(dest, f):
     out = []
     if vd.is_dir():
         for e in vd.iterdir():
-            for name in (base, base + ".gz"):
+            for c, ext in CODECS.items():
+                name = base + ext
                 if e.name.startswith(name + ".") and TS.fullmatch(e.name[len(name) + 1:]):
-                    out.append((e, e.name[len(name) + 1:], name != base))
+                    out.append((e, e.name[len(name) + 1:], c != "none"))
     return sorted(out, key=lambda x: x[1], reverse=True)
 
 
@@ -674,38 +830,54 @@ def scan_job():
     return msg
 
 
+def drop_single_copies(dest, f, keep_plain=False):
+    """Remove per-file copies of `f` that a newer copy has replaced."""
+    for c in CODECS:
+        if c == "none" and keep_plain:
+            continue
+        target_of(dest, f, c).unlink(missing_ok=True)
+
+
 def copy_to(dest, f, h):
-    gz = SETTINGS["compress"]
-    tgt = target_of(dest, f, gz)
+    """Plain copy of one file (compression off)."""
+    tgt = target_of(dest, f, "none")
     tgt.parent.mkdir(parents=True, exist_ok=True)
     keep = int(SETTINGS["versions"])
     if tgt.exists() and keep > 0:
         archive_version(dest, f, tgt, keep)
     part = tgt.with_name(tgt.name + ".part")
     try:
-        if gz:
-            with open(f["path"], "rb") as s, gzip.open(part, "wb", compresslevel=6) as o:
-                shutil.copyfileobj(s, o, 1 << 20)
-            os.utime(part, (time.time(), f["mtime"]))
-        else:
-            shutil.copy2(f["path"], part)
+        shutil.copy2(f["path"], part)
         os.replace(part, tgt)
     finally:
         part.unlink(missing_ok=True)
-    other = target_of(dest, f, not gz)
-    if other.exists():
-        if keep > 0:
-            archive_version(dest, f, other, keep)
-        else:
-            other.unlink(missing_ok=True)
-    record(f, dest, h)
+    drop_single_copies(dest, f, keep_plain=True)
+    record(f, dest, h, arc=False)
 
 
-def record(f, dest, h):
+def record(f, dest, h, arc=None, member=None):
+    """Note that `dest` holds this version. arc: archive path (relative to the PC folder), False for a plain
+    copy, None to keep where it already is (content unchanged)."""
     with LOCK:
-        f["backed"][dest] = {"hash": h, "size": f["size"], "mtime": f["mtime"],
-                             "at": datetime.now().isoformat(sep=" ", timespec="seconds")}
+        old = f["backed"].get(dest) or {}
+        b = {"hash": h, "size": f["size"], "mtime": f["mtime"],
+             "at": datetime.now().isoformat(sep=" ", timespec="seconds")}
+        if arc is None:
+            arc, member = old.get("arc"), old.get("member")
+        if arc:
+            b["arc"], b["member"] = arc, member
+        f["backed"][dest] = b
         mark()
+
+
+def prune_archives(dest, names):
+    """Delete run archives in `names` that no file refers to any more."""
+    with LOCK:
+        used = {b["arc"] for f in list(INDEX.values()) + list(GONE.values())
+                for dd, b in (f.get("backed") or {}).items() if dd == dest and b.get("arc")}
+    for n in names:
+        if n not in used:
+            (Path(dest) / pc_folder(dest) / n).unlink(missing_ok=True)
 
 
 def backup_job(trigger="manual", scan_first=False):
@@ -739,8 +911,8 @@ def backup_job(trigger="manual", scan_first=False):
             if not (b and b["size"] == f["size"] and b["mtime"] == f["mtime"]):
                 have = 0
                 try:
-                    p, _ = find_backup(d, f)
-                    have = p.stat().st_size if p else 0     # the new copy replaces this one
+                    p, _, m = find_backup(d, f)
+                    have = p.stat().st_size if p and not m else 0     # the new copy replaces this one
                 except OSError:
                     pass
                 need[d] += max(f["size"] - have, 0)
@@ -753,38 +925,71 @@ def backup_job(trigger="manual", scan_first=False):
     copied = skipped = failed = cbytes = done_b = 0
     errors = []
     t0 = time.time()
-    for n, f in enumerate(todo, 1):
-        check_cancel()
-        try:
-            st = os.stat(f["path"])
-            with LOCK:
-                f["size"], f["mtime"] = st.st_size, st.st_mtime
-                mark()
-            h = hash_file(f["path"])
-            did = bad = False
-            for d in ds:
-                b = f["backed"].get(d)
-                if b and b["hash"] == h:
-                    record(f, d, h)  # content unchanged, only the timestamp moved
-                    continue
-                try:
-                    copy_to(d, f, h)
-                    did = True
-                    cbytes += f["size"]
-                except Exception as e:
-                    bad = True
-                    errors.append(f"{f['path']} -> {d}: {e}")
-            if bad:
+    codec = current_codec()
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    bundles, added = {}, {d: [] for d in ds}          # per drive: the open archive, and what went into it
+
+    def bundle(d):
+        if d not in bundles:
+            rel = f"{ARC_DIR}/Backup-{stamp}{BUNDLE_EXT[codec]}"
+            bundles[d] = (Bundle(Path(d) / pc_folder(d) / rel, codec), rel)
+        return bundles[d]
+
+    try:
+        for n, f in enumerate(todo, 1):
+            check_cancel()
+            try:
+                st = os.stat(f["path"])
+                with LOCK:
+                    f["size"], f["mtime"] = st.st_size, st.st_mtime
+                    mark()
+                h = hash_file(f["path"])
+                did = bad = False
+                for d in ds:
+                    b = f["backed"].get(d)
+                    if b and b["hash"] == h:
+                        record(f, d, h)  # content unchanged, only the timestamp moved
+                        continue
+                    try:
+                        if codec == "none":
+                            copy_to(d, f, h)
+                        else:
+                            bn, rel = bundle(d)
+                            bn.add(f["path"], member_name(f))
+                            added[d].append((f, h, rel))
+                        did = True
+                        cbytes += f["size"]
+                    except Exception as e:
+                        bad = True
+                        errors.append(f"{f['path']} -> {d}: {e}")
+                if bad:
+                    failed += 1
+                elif did:
+                    copied += 1
+                else:
+                    skipped += 1
+            except Exception as e:
                 failed += 1
-            elif did:
-                copied += 1
-            else:
-                skipped += 1
-        except Exception as e:
-            failed += 1
-            errors.append(f"{f['path']}: {e}")
-        done_b += f["size"]
-        job_set(done=done_b, message=f"{n} of {len(todo)} files")
+                errors.append(f"{f['path']}: {e}")
+            done_b += f["size"]
+            job_set(done=done_b, message=f"{n} of {len(todo)} files")
+    finally:
+        for d, (bn, rel) in bundles.items():           # also runs when the job is cancelled: keep what was written
+            try:
+                job_set(message="Finishing the archive...")
+                if bn.close():
+                    stale = set()
+                    for f, h, r in added[d]:
+                        old = (f["backed"].get(d) or {}).get("arc")
+                        if old and old != r:
+                            stale.add(old)
+                        record(f, d, h, arc=r, member=member_name(f))
+                        drop_single_copies(d, f)
+                    prune_archives(d, stale)
+            except Exception as e:
+                failed += len(added[d])
+                copied = max(copied - len(added[d]), 0)
+                errors.append(f"Could not finish the archive on {d}: {e}")
     for e in errors[:50]:
         log("error", "backup", e)
     secs = round(time.time() - t0, 1)
@@ -822,28 +1027,64 @@ def verify_job():
     with LOCK:
         items = [(f, d) for f in INDEX.values() for d in ds if d in f["backed"]]
     job_set(total=len(items), done=0, message="Verifying backups...")
-    ok = bad = 0
-    for n, (f, d) in enumerate(items, 1):
+    ok = bad = n = 0
+    groups = {}                                        # run archive -> [(file, drive, member)]
+
+    def fail(f, d, problem):
+        nonlocal bad
+        bad += 1
+        log("error", "verify", f"{f['path']} on {d}: {problem}. It will be backed up again.")
+        with LOCK:
+            f["backed"].pop(d, None)
+            mark()
+
+    def tick():
+        nonlocal n
+        n += 1
+        job_set(done=n, message=f"{n} of {len(items)} copies checked")
+
+    for f, d in items:
         check_cancel()
-        p, gz = find_backup(d, f)
-        problem = None
+        p, codec, member = find_backup(d, f)
         if p is None:
-            problem = "copy is missing"
+            fail(f, d, "copy is missing")
+            tick()
+        elif member:
+            groups.setdefault((p, codec), []).append((f, d, member))
         else:
             try:
-                if hash_file(p, gz) != f["backed"][d]["hash"]:
-                    problem = "copy is corrupt (hash mismatch)"
+                if hash_file(p, codec) != f["backed"][d]["hash"]:
+                    fail(f, d, "copy is corrupt (hash mismatch)")
+                else:
+                    ok += 1
             except Exception as e:
-                problem = f"cannot read copy: {e}"
-        if problem:
-            bad += 1
-            log("error", "verify", f"{f['path']} on {d}: {problem}. It will be backed up again.")
-            with LOCK:
-                f["backed"].pop(d, None)
-                mark()
-        else:
-            ok += 1
-        job_set(done=n, message=f"{n} of {len(items)} copies checked")
+                fail(f, d, f"cannot read copy: {e}")
+            tick()
+    for (p, codec), rows in groups.items():
+        want = {m: (f, d) for f, d, m in rows}
+        seen = set()
+        try:
+            for m, fh in read_members(p, codec, want):
+                check_cancel()
+                f, d = want[m]
+                seen.add(m)
+                if hash_stream(fh) != f["backed"][d]["hash"]:
+                    fail(f, d, "copy is corrupt (hash mismatch)")
+                else:
+                    ok += 1
+                tick()
+        except Cancelled:
+            raise
+        except Exception as e:
+            for m, (f, d) in want.items():
+                if m not in seen:
+                    seen.add(m)
+                    fail(f, d, f"cannot read copy: {e}")
+                    tick()
+        for m, (f, d) in want.items():
+            if m not in seen:
+                fail(f, d, "copy is missing from its archive")
+                tick()
     msg = f"Verified {ok} copies OK, {bad} problems"
     log("warn" if bad else "info", "verify", msg)
     return msg
@@ -851,9 +1092,26 @@ def verify_job():
 
 def restore_job(items, target, overwrite):
     refresh_destinations(True)
-    done = skipped = failed = 0
+    done = skipped = failed = n = 0
     job_set(total=len(items), done=0, message="Restoring...")
-    for n, it in enumerate(items, 1):
+    groups = {}                                        # run archive -> (codec, {member: (file, output path)})
+
+    def tick():
+        nonlocal n
+        n += 1
+        job_set(done=n, message=f"{n} of {len(items)} files")
+
+    def write_out(f, out, stream):
+        part = out.with_name(out.name + ".restoring")
+        try:
+            with open(part, "wb") as o:
+                shutil.copyfileobj(stream, o, 1 << 20)
+            os.utime(part, (time.time(), f["mtime"]))
+            os.replace(part, out)
+        finally:
+            part.unlink(missing_ok=True)
+
+    for it in items:
         check_cancel()
         f = None
         try:
@@ -863,30 +1121,49 @@ def restore_job(items, target, overwrite):
             d = it.get("dest")
             if not f or d not in SETTINGS["destinations"]:
                 raise RuntimeError("unknown file or destination")
-            src, gz = find_backup(d, f)
+            src, codec, member = find_backup(d, f)
             if not src or not src.exists():
                 raise RuntimeError("backup copy not found")
             out = Path(target) / f["label"] / f["rel"] if target else Path(f["path"])
             if out.exists() and not overwrite:
                 skipped += 1
+                tick()
                 continue
             out.parent.mkdir(parents=True, exist_ok=True)
-            part = out.with_name(out.name + ".restoring")
-            try:
-                if gz:
-                    with gzip.open(src, "rb") as s_, open(part, "wb") as o:
-                        shutil.copyfileobj(s_, o, 1 << 20)
-                    os.utime(part, (time.time(), f["mtime"]))
-                else:
-                    shutil.copy2(src, part)
-                os.replace(part, out)
-            finally:
-                part.unlink(missing_ok=True)
+            if member:
+                groups.setdefault((src, codec), {})[member] = (f, out)
+                continue
+            with open_copy(src, codec) as s_:
+                write_out(f, out, s_)
             done += 1
         except Exception as e:
             failed += 1
             log("error", "restore", f"{f['path'] if f else (it.get('id') if isinstance(it, dict) else it)}: {e}")
-        job_set(done=n, message=f"{n} of {len(items)} files")
+        tick()
+    for (src, codec), want in groups.items():
+        seen = set()
+        try:
+            for m, fh in read_members(src, codec, want):
+                check_cancel()
+                f, out = want[m]
+                seen.add(m)
+                try:
+                    write_out(f, out, fh)
+                    done += 1
+                except Exception as e:
+                    failed += 1
+                    log("error", "restore", f"{f['path']}: {e}")
+                tick()
+        except Cancelled:
+            raise
+        except Exception as e:
+            log("error", "restore", f"Cannot read {src}: {e}")
+        for m, (f, out) in want.items():
+            if m not in seen:
+                seen.add(m)
+                failed += 1
+                log("error", "restore", f"{f['path']}: not found inside {Path(src).name}")
+                tick()
     msg = f"Restored {done} files to {target or 'their original place'}, {skipped} skipped (already exist), {failed} failed"
     log("warn" if failed else "info", "restore", msg)
     return msg
@@ -1156,7 +1433,13 @@ def clean_settings(b):
     s["new_files"] = "include" if b.get("new_files") == "include" else "review"
     s["max_size_mb"] = max(0, int(b.get("max_size_mb") or 0))
     s["versions"] = 0
-    s["compress"] = bool(b.get("compress"))
+    c = b.get("compress")
+    c = "gz" if c is True else ("none" if c in (False, None, "") else c)
+    if c not in CODECS:
+        raise ValueError("Unknown compression format")
+    if not codec_ok(c):
+        raise ValueError("7-Zip support is not installed in this build")
+    s["compress"] = c
     sc = b.get("schedule") or {}
     if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", str(sc.get("time", ""))):
         raise ValueError("Schedule time must look like 22:00")
@@ -1172,7 +1455,7 @@ def clean_settings(b):
 
 @app.get("/api/settings")
 def get_settings():
-    return jsonify({**SETTINGS, "data_dir": str(DATA), "auth_required": bool(PASSWORD), "junk_list": JUNK, "scan_roots": sources(),
+    return jsonify({**SETTINGS, "data_dir": str(DATA), "auth_required": bool(PASSWORD), "junk_list": JUNK, "compress_formats": codec_list(), "scan_roots": sources(),
                     "pc_name": PC["name"]})
 
 
@@ -1227,6 +1510,21 @@ def whole_pc():
     write_json("settings.json", SETTINGS)
     log("info", "settings", f"Scan set to the whole PC: {', '.join(src)}")
     return get_settings()
+
+
+PICKER = {"fn": None}      # the desktop window sets this to open the Windows folder dialog
+
+
+@app.post("/api/pick-folder")
+def pick_folder():
+    """Open the native folder dialog. native=false means this run has no window (browser/dev): the page falls back to its own browser."""
+    fn = PICKER["fn"]
+    if fn is None:
+        return jsonify(native=False, path=None)
+    path = fn()
+    if path and is_unc(path):
+        return jsonify(error="Network paths are not allowed. Use a drive letter."), 400
+    return jsonify(native=True, path=os.path.normpath(path) if path else None)
 
 
 @app.get("/api/browse")

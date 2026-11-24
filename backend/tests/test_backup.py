@@ -262,3 +262,60 @@ def test_wrong_passwords_are_throttled(rig, monkeypatch):
     assert rig.get("/api/job").status_code == 200
     monkeypatch.setattr(backup, "TOKENS", set())
     assert rig.get("/api/job").status_code == 401
+
+
+import pytest
+
+
+@pytest.mark.parametrize("codec", ["zip", "gz", "bz2", "xz", "7z"])
+def test_bundle_roundtrip(tmp_path, codec):
+    if not backup.codec_ok(codec):
+        pytest.skip("py7zr not installed")
+    a, b = tmp_path / "a.txt", tmp_path / "b.bin"
+    a.write_bytes(b"hello world " * 5000)
+    b.write_bytes(os.urandom(4000))
+    arc = tmp_path / ("run" + backup.BUNDLE_EXT[codec])
+    bn = backup.Bundle(arc, codec)
+    bn.add(a, "Docs/sub/a.txt")
+    bn.add(b, "Docs/b.bin")
+    assert bn.close() and arc.exists()
+    got = {m: backup.hash_stream(fh) for m, fh in backup.read_members(arc, backup.archive_codec(arc.name), {"Docs/sub/a.txt", "Docs/b.bin", "nope"})}
+    assert got == {"Docs/sub/a.txt": backup.hash_file(a), "Docs/b.bin": backup.hash_file(b)}
+
+
+@pytest.mark.parametrize("codec", ["zip", "gz", "7z"])
+def test_compressed_run_is_one_archive_that_restores_and_verifies(rig, monkeypatch, codec):
+    if not backup.codec_ok(codec):
+        pytest.skip("py7zr not installed")
+    monkeypatch.setitem(backup.SETTINGS, "compress", codec)
+    a = rig.write("Docs/a.txt", "alpha")
+    b = rig.write("Docs/sub/b.txt", "beta")
+    backup.scan_job()
+    rig.choose_all()
+    backup.backup_job()
+    arcs = [x for x in rig.on_drive() if backup.ARC_DIR in x]
+    assert len(arcs) == 1 and arcs[0].endswith(backup.BUNDLE_EXT[codec])      # one archive, not one per file
+    assert not [x for x in rig.on_drive() if x.endswith(("a.txt", "b.txt"))]
+    assert "2 copies OK, 0 problems" in backup.verify_job()
+    # a changed file goes into a new archive; the old one is dropped once nothing needs it
+    a.write_text("alpha two")
+    b.write_text("beta two")
+    backup.backup_job(scan_first=True)
+    arcs = [x for x in rig.on_drive() if backup.ARC_DIR in x]
+    assert len(arcs) == 1
+    a.unlink()
+    b.unlink()
+    backup.scan_job()
+    for fid in list(backup.GONE):
+        backup.restore_job([{"id": fid, "dest": str(rig.dest)}], "", False)
+    assert a.read_text() == "alpha two" and b.read_text() == "beta two"
+
+
+def test_pick_folder_uses_the_native_dialog_when_there_is_one(rig, monkeypatch):
+    assert rig.post("/api/pick-folder").json == {"native": False, "path": None}
+    monkeypatch.setitem(backup.PICKER, "fn", lambda: str(rig.src))
+    assert rig.post("/api/pick-folder").json == {"native": True, "path": str(rig.src)}
+    monkeypatch.setitem(backup.PICKER, "fn", lambda: None)
+    assert rig.post("/api/pick-folder").json == {"native": True, "path": None}
+    monkeypatch.setitem(backup.PICKER, "fn", lambda: r"\\server\share")
+    assert rig.post("/api/pick-folder").status_code == 400

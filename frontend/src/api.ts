@@ -34,7 +34,7 @@ export function eta(job: Job): string {
   return `${Math.round(frac * 100)}% done, about ${t} left`;
 }
 export interface Settings {
-  sources: string[]; destinations: string[]; excludes: string[]; max_size_mb: number; versions: number; compress: boolean;
+  sources: string[]; destinations: string[]; excludes: string[]; max_size_mb: number; versions: number; compress: string; compress_formats: { id: string; label: string; available: boolean }[];
   schedule: { enabled: boolean; time: string; days: number[] }; auto_scan_minutes: number; webhook: string; whole_pc: boolean; scan_roots: string[]; skip_junk: boolean; new_files: "review" | "include"; junk_list: string[]; pc_name: string; data_dir: string; auth_required: boolean;
 }
 export interface LogRow { at: string; level: "info" | "warn" | "error"; action: string; message: string }

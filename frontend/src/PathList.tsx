@@ -14,6 +14,10 @@ export function PathPicker({ value, onChange, onUse, useLabel }: { value: string
   const go = async (p: string) => { try { setErr(""); setBr(await api<Browse>("/api/browse?path=" + encodeURIComponent(p))); } catch (e) { setErr((e as Error).message); } };
   const toggle = async () => {
     if (open) return setOpen(false);
+    try {                                    // in the desktop app this is the normal Windows folder window
+      const r = await api<{ native: boolean; path: string | null }>("/api/pick-folder", "POST");
+      if (r.native) { if (r.path) { if (onUse) onUse(r.path); else onChange(r.path); } return; }
+    } catch { /* no native dialog available (older backend still running): use the in-page browser below */ }
     setOpen(true); setBr(null);
     try { setErr(""); setDrives(await api<Drive[]>("/api/drives")); } catch (e) { setErr((e as Error).message); }
   };

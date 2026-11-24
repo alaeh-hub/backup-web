@@ -75,7 +75,7 @@ def rig(tmp_path, monkeypatch):
     monkeypatch.setitem(backup.SETTINGS, "destinations", [str(r.dest)])
     monkeypatch.setitem(backup.SETTINGS, "excludes", [])
     monkeypatch.setitem(backup.SETTINGS, "skip_junk", True)
-    monkeypatch.setitem(backup.SETTINGS, "compress", False)
+    monkeypatch.setitem(backup.SETTINGS, "compress", "none")
     monkeypatch.setitem(backup.SETTINGS, "new_files", "review")
     monkeypatch.setitem(backup.SETTINGS, "max_size_mb", 0)
     return r

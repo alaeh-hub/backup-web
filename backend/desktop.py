@@ -27,7 +27,14 @@ def main():
         threading.Thread(target=core.scheduler, daemon=True).start()
         server = make_server("127.0.0.1", PORT, core.app, threaded=True)
         threading.Thread(target=server.serve_forever, daemon=True).start()
-    webview.create_window(TITLE, URL, width=1280, height=820, min_size=(420, 600), confirm_close=False)
+    window = webview.create_window(TITLE, URL, width=1280, height=820, min_size=(420, 600), confirm_close=False)
+
+    def pick_folder():
+        kind = webview.FileDialog.FOLDER if hasattr(webview, "FileDialog") else webview.FOLDER_DIALOG
+        r = window.create_file_dialog(kind)
+        return r[0] if r else None
+
+    core.PICKER["fn"] = pick_folder
     webview.start()                              # blocks until the window is closed
     if server:
         server.shutdown()

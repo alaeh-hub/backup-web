@@ -68,7 +68,8 @@ export function SettingsTab({ onSaved }: { onSaved: () => void }) {
         <div className="fields">
           <label>Skip files larger than (MB, 0 for no limit)<NumField value={s.max_size_mb} onCommit={n => set({ max_size_mb: n })} /></label>
         </div>
-        <label className="check"><input type="checkbox" checked={s.compress} onChange={e => set({ compress: e.target.checked })} /> Compress backups (saves space, files are stored as .gz)</label>
+        <label>Compress backups (each backup run is saved as one archive per drive)<Select label="Compress backups" value={s.compress} onChange={v => set({ compress: v })} options={s.compress_formats.filter(f => f.available).map(f => ({ value: f.id, label: f.label }))} /></label>
+        <p className="sub">Everything backed up in one run is stored as a single archive in the _archives folder of this PC on the drive, with your folders kept inside it. Restore and Verify still work on single files. RAR is not offered because only WinRAR can create RAR files. Copies stored in the old format are still found and restored.</p>
       </section>
       <section className="block">
         <h2>Scheduled scan</h2>

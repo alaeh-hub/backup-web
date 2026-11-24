@@ -53,6 +53,12 @@ Other parts:
 - **Verify** re-checks backed up copies. **Organize** gathers documents, pictures and videos into one sorted folder.
 - **Scheduled scan** (Settings) scans on chosen days and times so new files are waiting for review. It never
   copies anything by itself.
+- **Compression** (Settings): off by default (plain copies). Turn it on and each backup run is saved as one archive per
+  drive (`.zip`, `.7z`, `.tar.gz`, `.tar.bz2` or `.tar.xz`) in the `_archives` folder of this PC, with your folders kept
+  inside. Only new or changed files go into a run's archive; an older archive is deleted once none of its files are
+  still needed. Restore and Verify read single files out of the archives and still handle older per-file copies.
+  RAR is not offered because only WinRAR can create RAR files. 7z needs `py7zr` (in `requirements-desktop.txt`,
+  bundled in the installer).
 - Optional webhook message (Slack, Discord or any JSON endpoint) after scheduled scans and backups.
 
 ## Security
