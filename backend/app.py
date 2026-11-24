@@ -16,7 +16,8 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 
-DATA = Path(os.environ.get("BACKUP_DATA_DIR") or Path.home() / ".ala-eh-backup")
+ON_VERCEL = bool(os.environ.get("VERCEL"))      # serverless: only /tmp is writable, and it is not persistent
+DATA = Path(os.environ.get("BACKUP_DATA_DIR") or (Path("/tmp") / ".ala-eh-backup" if ON_VERCEL else Path.home() / ".ala-eh-backup"))
 DATA.mkdir(parents=True, exist_ok=True)
 DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 PASSWORD = os.environ.get("BACKUP_PASSWORD", "")
@@ -1079,7 +1080,7 @@ FAILS = {}
 @app.before_request
 def origin_guard():
     """Only this PC's own pages may use the API: stops other web sites (DNS rebinding, cross-site forms)."""
-    if BIND_HOST not in ("0.0.0.0", "::"):
+    if BIND_HOST not in ("0.0.0.0", "::") and not ON_VERCEL:
         host = (urlsplit("//" + (request.host or "")).hostname or "").lower()
         if host not in LOOPBACK_HOSTS and host != BIND_HOST.lower():
             return jsonify(error="Blocked: unknown host"), 403
