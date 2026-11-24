@@ -14,6 +14,10 @@ are backed up, so the installer is the real deployment. Vercel (`vercel.json`) o
 Always work on a branch (`feature/...`, `fix/...`, `chore/...`) and push that branch, then open a pull
 request into `main`. Do not commit to or push `main` yourself, and never force-push it. The user merges the PR.
 
+### 0b. Commit and push your branch when work is done
+When the user asks you to commit, also push the branch (`git push -u origin <branch>`) unless they say not to,
+and tell them the branch name so they can open the PR. Pushing a branch is always fine; pushing `main` is not.
+
 ### 1. Update the release version whenever you commit a change that ships
 Every change that will be merged into `main` and changes the app (code, UI, installer) must bump the version.
 Use semantic versioning: `fix` = patch (1.0.0 -> 1.0.1), new feature = minor, breaking change = major.
@@ -49,4 +53,5 @@ build output, local state, secrets or machine-specific (for example `installer/o
   `backend/app.py` and `frontend/vite.config.ts` in sync if you change it.
 - Run `python -m pytest backend/tests -q` before pushing; all tests must pass.
 - Rebuild the installer locally with `powershell -ExecutionPolicy Bypass -File installer\build.ps1`.
-- Do not push, open a PR, tag or publish a release unless the user asked you to.
+- Do not open a PR, tag or publish a release unless the user asked you to. Do not push at all until the work is committed and tested.
+- Keep `README.md` in step with behavior changes (install, run, build, release) in the same commit.
