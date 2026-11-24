@@ -2,7 +2,7 @@
 
 Every connection shows this PC's certificate (so the other PC knows who is asking) and checks that the other PC's
 certificate is the one remembered at pairing, BEFORE anything is sent. A different certificate is refused."""
-import hmac, http.client, json, socket, time
+import hmac, http.client, json, re, socket, time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode
@@ -111,7 +111,11 @@ def pair(host, port, code, my_name, identity):
         conn.close()
     if not hmac.compare_digest(done.get("mac", ""), agent_mod.mac(key, "server", server_fp, identity.fp)):
         raise RemoteError("The other PC could not prove it knew the code. Pairing was cancelled.")
-    return {"id": done["id"], "name": done["name"], "host": host, "port": int(done["port"]), "fp": server_fp,
+    pid, pname = done.get("id"), done.get("name")
+    if not (isinstance(pid, str) and re.fullmatch(r"[A-Za-z0-9_-]{4,64}", pid) and isinstance(pname, str) and 0 < len(pname) <= 60
+            and isinstance(done.get("port"), int) and 0 < done["port"] < 65536):
+        raise RemoteError("The other PC sent details this app does not accept, so pairing was cancelled.")
+    return {"id": pid, "name": pname, "host": host, "port": done["port"], "fp": server_fp,
             "added": datetime.now().isoformat(sep=" ", timespec="seconds"), "last_seen": ""}
 
 

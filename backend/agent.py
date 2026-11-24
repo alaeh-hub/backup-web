@@ -127,6 +127,8 @@ class Agent:
             if not os.path.isdir(p):
                 raise ValueError(f"Not a folder: {p}")
             real = Path(os.path.realpath(p))
+            if any(x.lower() in DENY_NAMES for x in list(Path(p).parts) + list(real.parts)):
+                raise ValueError("A folder like .ssh, .gnupg or .aws holds secrets and cannot be shared, or be inside a shared folder's path.")
             if real == data or data in real.parents or real in data.parents:
                 raise ValueError("This app's own data folder, or a folder that contains it, cannot be shared.")
             base = re.sub(r'[<>:"/\\|?*]', "_", Path(p).name or p.replace(":", "").strip("\\/") or "root").strip(" .") or "root"
@@ -144,6 +146,19 @@ class Agent:
         c = self.config()
         c["auto_off_hours"] = max(0, min(168, int(hours)))
         self._write("agent.json", c)
+        with self.lock:
+            if self.server:
+                self._arm_timer()                                 # counted from now, replacing the one started earlier
+
+    def _arm_timer(self):
+        if self.timer:
+            self.timer.cancel()
+            self.timer = None
+        hours = self.config()["auto_off_hours"]
+        if hours:
+            self.timer = threading.Timer(hours * 3600, self.stop)
+            self.timer.daemon = True
+            self.timer.start()
 
     def resolve(self, label, rel):
         """The real path of `rel` inside the shared folder `label`, or None when it is not allowed."""
@@ -154,6 +169,8 @@ class Agent:
         if any(x == ".." or ":" in x or x.lower() in DENY_NAMES for x in parts):
             return None
         real_root = os.path.realpath(root)
+        if any(x.lower() in DENY_NAMES for x in Path(real_root).parts):
+            return None                                           # the shared folder itself is (inside) a secrets folder, e.g. through a link
         p = os.path.realpath(os.path.join(real_root, *parts))
         nr, np_ = os.path.normcase(real_root), os.path.normcase(p)
         if np_ != nr and not np_.startswith(nr.rstrip(os.sep) + os.sep):
@@ -185,11 +202,7 @@ class Agent:
             self.server, self.port = srv, srv.server_port
             self.thread = threading.Thread(target=srv.serve_forever, daemon=True)
             self.thread.start()
-            hours = self.config()["auto_off_hours"]
-            if hours:
-                self.timer = threading.Timer(hours * 3600, self.stop)
-                self.timer.daemon = True
-                self.timer.start()
+            self._arm_timer()
             if discovery:
                 self._start_discovery()
             self._note("-", "sharing", "started", 200)

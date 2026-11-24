@@ -2,7 +2,7 @@
 
 A local backup tool for Windows PCs (Flask + React + TypeScript). It scans a PC, lets you choose what to
 back up, and copies the chosen files to an external drive. Several PCs can share one drive: each PC gets its
-own folder. Nothing leaves the machine and there is no database; settings and the file list are JSON files
+own folder. Your files never leave your machines (the fonts are bundled, and the only internet request is the optional update check) and there is no database; settings and the file list are JSON files
 in `~/.ala-eh-backup` (change with `BACKUP_DATA_DIR`).
 
 ## Install (Windows)
@@ -75,12 +75,12 @@ does both jobs; nothing special is installed.
 2. **On A:** open **Other PCs**, click **Find PCs on this network** (or type B's address), enter the 6-digit code and
    **Pair**. Tick the folders of B to back up.
 3. **Back up as usual** on A: B's files appear in New files / Files, and **Back up now** copies them to A's drive under
-   `<A's folder>/Remote PCs/<B's name>/<folder>`. Verify and Restore work like any other file (restore asks for a folder).
+   `<A's folder>/Remote PCs/<B's name (short id)>/<folder>` (the short id keeps two PCs with the same name apart). Verify and Restore work like any other file (restore asks for a folder).
 
 How it stays safe:
 
 - Sharing is **off** until the owner turns it on, **read-only**, and limited to the chosen folders. This app's own data
-  (it holds the private key), `.ssh`, `.gnupg`, `.aws` and similar folders are never served.
+  (it holds the private key), `.ssh`, `.gnupg`, `.aws` and similar folders are never served, and cannot be chosen as a shared folder either.
 - Pairing uses a one-time code that works once, for 5 minutes, with 5 tries (SPAKE2: the code is never sent and cannot
   be guessed offline). Afterwards each PC is recognised by its certificate (mutual TLS); a different certificate is refused
   before anything is sent. B can **Remove** a PC at any time and it loses access at once.

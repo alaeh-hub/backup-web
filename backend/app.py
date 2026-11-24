@@ -536,9 +536,14 @@ def clean_remote_rel(rel):
     return rel
 
 
-def remote_key(pc_name, root):
+def peer_tag(peer):
+    """A PC's name plus a short piece of its unique id, so two PCs that share a name can never share a folder or a file id."""
+    return f"{safe_name(peer['name'])} ({safe_name(str(peer['id']))[:6]})"
+
+
+def remote_key(peer, root):
     """How a folder of another PC is shown in the file list, written like a network path (two separators, the PC, the folder)."""
-    return os.sep * 2 + safe_name(pc_name) + os.sep + safe_name(root)
+    return os.sep * 2 + peer_tag(peer) + os.sep + safe_name(root)
 
 
 def remote_keys():
@@ -546,7 +551,7 @@ def remote_keys():
     for rs in SETTINGS.get("remote_sources", []):
         peer = PEERS.get(rs.get("pc", ""))
         if peer:
-            out.append(remote_key(peer["name"], rs["root"]))
+            out.append(remote_key(peer, rs["root"]))
     return out
 
 
@@ -736,8 +741,8 @@ def scan_job():
         if not peer:
             continue
         rroot = rs["root"]
-        key = remote_key(peer["name"], rroot)
-        rlabel = os.path.join("Remote PCs", safe_name(peer["name"]), safe_name(rroot))
+        key = remote_key(peer, rroot)
+        rlabel = os.path.join("Remote PCs", peer_tag(peer), safe_name(rroot))
         rnew, rfailed, refused = {}, [], 0
         job_set(message=f"Scanning {peer['name']} ({rroot})...")
         try:
@@ -782,7 +787,7 @@ def scan_job():
                 cur["selected"], cur["reviewed"], cur["backed"] = f["selected"], f.get("reviewed", True), f.get("backed", {})
             elif f["src"] in keep_src or any(os.path.normcase(f["path"]).startswith(p + os.sep) for p in failed):
                 new[i] = f                                 # could not be read this time: keep it as it was
-            elif f.get("backed") and f["src"] in scanned:
+            elif f.get("backed") and (f["src"] in scanned or f.get("remote")):
                 GONE[i] = f                                # deleted from the PC, but the backup copy stays restorable
         for i in new:
             GONE.pop(i, None)
@@ -1100,10 +1105,16 @@ def organize_job(scope, target):
     tnorm = os.path.normcase(os.path.abspath(target))
     allowed = {e: c for e, c in EXT_CAT.items() if not (scope == "pc" and c == "Code")}
     todo, ignored = [], 0
+    mf = DATA / "organized-index.json"
+    try:
+        manifest = json.loads(mf.read_text("utf8"))
+    except (OSError, ValueError):
+        manifest = {}
+    made = {os.path.normcase(os.path.abspath(k)) for k in manifest}
     for root in organize_roots(scope):
         rnorm = os.path.normcase(os.path.abspath(root))
-        if rnorm == tnorm or rnorm.startswith(tnorm.rstrip(os.sep) + os.sep):
-            continue                      # the target is (inside) a scanned folder: its own output is not new input
+        if rnorm == tnorm:
+            continue                      # the target is itself a scanned folder: its own output is not new input
         for dp, dirs, names in os.walk(root):
             check_cancel()
             dirs[:] = [d for d in dirs if d.lower() not in SKIP_DIRS and not d.startswith(("$", "."))
@@ -1114,6 +1125,8 @@ def organize_job(scope, target):
                     ignored += 1
                     continue
                 p = os.path.join(dp, n)
+                if os.path.normcase(os.path.abspath(p)) in made:
+                    continue                  # a file this tool created in an earlier run: output, not input
                 try:
                     st = os.stat(p)
                 except OSError:
@@ -1124,11 +1137,6 @@ def organize_job(scope, target):
     u = disk(target)
     if u and total > u["free"]:
         raise RuntimeError(f"Not enough space in {target}: needs up to {fmt(total)}, only {fmt(u['free'])} free")
-    mf = DATA / "organized-index.json"
-    try:
-        manifest = json.loads(mf.read_text("utf8"))
-    except (OSError, ValueError):
-        manifest = {}
     job_set(total=total, done=0, message=f"Organizing {len(todo)} files ({fmt(total)})...")
     copied = same = failed = done_b = 0
     try:
@@ -2046,6 +2054,9 @@ def peers_pair():
         return bad(f"Pairing failed ({e.__class__.__name__}).", 502)
     if peer["id"] == PC["id"]:
         return bad("That is this PC.")
+    known = PEERS.get(peer["id"])
+    if known and known["fp"] != peer["fp"]:
+        return bad("A PC with that id is already paired under a different identity. Forget it first if it was reinstalled.", 409)
     PEERS.add(peer)
     log("info", "wireless", f"Paired with {peer['name']}")
     return jsonify(peer_view(peer))

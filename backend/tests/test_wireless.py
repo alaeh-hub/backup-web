@@ -13,14 +13,17 @@ import pki
 import remote
 
 
+TAG = "OFFICE-PC (b-id-1)"          # a PC's folder name: its name plus a short piece of its id
+
+
 class Pair:
     """B: the PC that shares. A: the PC that backs it up. Each has its own state folder, like two real PCs."""
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, pc_id="b-id-1234567890", sub="b"):
         self.root = root
-        self.docs = root / "b" / "docs"
+        self.docs = root / sub / "docs"
         self.docs.mkdir(parents=True)
-        self.b = agent_mod.Agent(lambda: root / "b" / "data" / "agent", lambda: "OFFICE-PC", lambda: "b-id-1234567890", backup.compile_rules)
+        self.b = agent_mod.Agent(lambda: root / sub / "data" / "agent", lambda: "OFFICE-PC", lambda: pc_id, backup.compile_rules)
         self.ident_a = pki.Identity(root / "a" / "data" / "agent")
         self.b.set_roots([str(self.docs)])
         self.st = self.b.start(host="127.0.0.1", port=0, discovery=False)
@@ -214,10 +217,10 @@ def test_another_pc_is_scanned_backed_up_and_restorable(rig, wired, tmp_path):
     backup.scan_job()
     assert sorted(f["rel"] for f in backup.INDEX.values()) == ["Reports" + os.sep + "q1.txt", "notes.txt"]
     f = next(iter(backup.INDEX.values()))
-    assert f["path"].startswith(os.sep * 2 + "OFFICE-PC" + os.sep + "docs") and f["remote"]["pc"] == "b-id-1234567890"
+    assert f["path"].startswith(os.sep * 2 + TAG + os.sep + "docs") and f["remote"]["pc"] == "b-id-1234567890"
     rig.choose_all()
     backup.backup_job()
-    base = rig.dest / backup.pc_folder(str(rig.dest)) / "Remote PCs" / "OFFICE-PC" / "docs"
+    base = rig.dest / backup.pc_folder(str(rig.dest)) / "Remote PCs" / TAG / "docs"
     assert (base / "Reports" / "q1.txt").read_text() == "quarterly" and (base / "notes.txt").read_text() == "notes"
     assert all(backup.status(f, [str(rig.dest)]) == "backed_up" for f in backup.INDEX.values())
     assert "Everything is already backed up" in backup.backup_job()
@@ -233,7 +236,7 @@ def test_another_pc_is_scanned_backed_up_and_restorable(rig, wired, tmp_path):
     assert "1 failed" in backup.restore_job([{"id": ids[0], "dest": str(rig.dest)}], "", False)
     out = tmp_path / "restored"
     assert "Restored 1 files" in backup.restore_job([{"id": ids[0], "dest": str(rig.dest)}], str(out), False)
-    assert (out / "Remote PCs" / "OFFICE-PC" / "docs" / "notes.txt").read_text() == "notes, edited"
+    assert (out / "Remote PCs" / TAG / "docs" / "notes.txt").read_text() == "notes, edited"
 
 
 def test_an_unreachable_pc_keeps_its_old_list_and_backups(rig, wired):
@@ -303,3 +306,126 @@ def test_unsafe_file_names_from_another_pc_are_refused(rig, wired, monkeypatch):
     assert sorted(f["rel"] for f in backup.INDEX.values()) == ["ok.txt"]
     assert any("refused as unsafe" in r["message"] for r in backup.read_logs("warn", ""))
     assert backup.clean_remote_rel("Reports/q1 (final).txt") == "Reports/q1 (final).txt"
+
+
+# ---------------------------------------------------------------- audit round 2
+
+def test_a_secrets_folder_cannot_be_the_shared_root(pr, tmp_path):
+    ssh = tmp_path / "home" / ".ssh"
+    ssh.mkdir(parents=True)
+    (ssh / "id_rsa").write_text("KEY")
+    deeper = tmp_path / "home" / ".aws" / "profiles"
+    deeper.mkdir(parents=True)
+    for bad in (ssh, deeper):
+        with pytest.raises(ValueError, match="holds secrets"):
+            pr.b.set_roots([str(bad)])
+    # even if the setting file is edited by hand, nothing under such a root is served
+    cfg = pr.b.folder() / "agent.json"
+    cfg.write_text(json.dumps({"roots": [{"label": "keys", "path": str(ssh)}], "auto_off_hours": 8}))
+    assert pr.b.resolve("keys", "id_rsa") is None and pr.b.resolve("keys", "") is None
+
+
+def test_a_link_to_a_secrets_folder_cannot_be_shared(pr, tmp_path):
+    ssh = tmp_path / "home" / ".ssh"
+    ssh.mkdir(parents=True)
+    link = tmp_path / "innocent"
+    try:
+        os.symlink(ssh, link, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this account cannot create symbolic links")
+    with pytest.raises(ValueError, match="holds secrets"):
+        pr.b.set_roots([str(link)])
+
+
+def test_two_pcs_with_the_same_name_do_not_overwrite_each_other(rig, pr, tmp_path, monkeypatch):
+    other = Pair(tmp_path, pc_id="c-id-0987654321", sub="c")           # a second PC that is also called OFFICE-PC
+    try:
+        pr.write("a.txt", "from the first PC")
+        other.write("a.txt", "from the second PC")
+        peers = []
+        for p in (pr, other):
+            peer = remote.pair("127.0.0.1", p.port, p.b.new_pairing()["code"], "A", backup.AGENT.identity())
+            backup.PEERS.add(peer)
+            peers.append(peer)
+        monkeypatch.setitem(backup.SETTINGS, "sources", [])
+        monkeypatch.setitem(backup.SETTINGS, "remote_sources", [{"pc": p["id"], "root": "docs"} for p in peers])
+        backup.scan_job()
+        assert len(backup.INDEX) == 2                                  # not one record that the other replaced
+        rig.choose_all()
+        backup.backup_job()
+        base = rig.dest / backup.pc_folder(str(rig.dest)) / "Remote PCs"
+        assert sorted(p.name for p in base.iterdir()) == ["OFFICE-PC (b-id-1)", "OFFICE-PC (c-id-0)"]
+        assert (base / "OFFICE-PC (b-id-1)" / "docs" / "a.txt").read_text() == "from the first PC"
+        assert (base / "OFFICE-PC (c-id-0)" / "docs" / "a.txt").read_text() == "from the second PC"
+    finally:
+        other.b.stop()
+
+
+def test_a_pc_cannot_take_over_the_id_of_one_already_paired(rig, pr, tmp_path):
+    first = remote.pair("127.0.0.1", pr.port, pr.b.new_pairing()["code"], "A", backup.AGENT.identity())
+    backup.PEERS.add(first)
+    impostor = Pair(tmp_path, pc_id="b-id-1234567890", sub="x")        # same id, a different certificate
+    try:
+        r = rig.post("/api/peers/pair", {"host": "127.0.0.1", "port": impostor.port, "code": impostor.b.new_pairing()["code"]})
+        assert r.status_code == 409 and "different identity" in r.json["error"]
+        assert backup.PEERS.get(first["id"])["fp"] == first["fp"]       # the real one is untouched
+    finally:
+        impostor.b.stop()
+
+
+def test_details_sent_by_the_other_pc_are_checked(pr, tmp_path):
+    bad = Pair(tmp_path, pc_id="no spaces or ../ allowed", sub="y")
+    try:
+        with pytest.raises(remote.RemoteError, match="does not accept"):
+            remote.pair("127.0.0.1", bad.port, bad.b.new_pairing()["code"], "A", pr.ident_a)
+    finally:
+        bad.b.stop()
+
+
+def test_backups_of_a_forgotten_pc_stay_restorable(rig, wired, tmp_path, monkeypatch):
+    wired.write("Reports/q1.txt", "quarterly")
+    backup.scan_job()
+    rig.choose_all()
+    backup.backup_job()
+    assert len(backup.INDEX) == 1
+    rig.write("local.txt", "x")
+    monkeypatch.setitem(backup.SETTINGS, "sources", [str(rig.src)])
+    assert rig.post("/api/peers/b-id-1234567890/forget").status_code == 200   # the PC is forgotten...
+    backup.scan_job()                                                          # ...and the next scan runs
+    assert [f["rel"] for f in backup.INDEX.values()] == ["local.txt"]
+    gone = [i for i, f in backup.GONE.items() if f.get("remote")]
+    assert len(gone) == 1                                                      # its backup is still listed, restorable
+    out = tmp_path / "back"
+    assert "Restored 1 files" in backup.restore_job([{"id": gone[0], "dest": str(rig.dest)}], str(out), False)
+    assert (out / "Remote PCs" / TAG / "docs" / "Reports" / "q1.txt").read_text() == "quarterly"
+
+
+def test_changing_the_auto_off_setting_changes_the_running_timer(pr):
+    assert pr.b.timer is not None and pr.b.timer.interval == 8 * 3600
+    pr.b.set_auto_off(1)
+    assert pr.b.timer.interval == 3600                                         # replaced, counted from now
+    pr.b.set_auto_off(0)
+    assert pr.b.timer is None                                                  # "never" really means never
+    pr.b.set_auto_off(4)
+    assert pr.b.timer.interval == 4 * 3600
+    pr.b.stop()
+    assert pr.b.timer is None
+
+
+def test_organize_reads_folders_inside_its_target_and_not_its_own_output(rig, monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    (home / "Documents").mkdir(parents=True)
+    (home / "Documents" / "report.pdf").write_text("r")
+    monkeypatch.setattr(backup, "organize_roots", lambda scope: [str(home / "Documents")])
+    assert "1 copied" in backup.organize_job("personal", str(home))           # the destination is an ancestor of the folder
+    outputs = sorted(str(p.relative_to(home)) for p in home.rglob("*.pdf"))
+    assert len(outputs) == 2                                                   # the original and one organized copy
+    assert "0 copied" in backup.organize_job("personal", str(home))           # its own output is not read again
+    assert len(list(home.rglob("*.pdf"))) == 2
+
+
+def test_no_web_font_is_loaded_from_the_internet():
+    web = Path(__file__).resolve().parents[2] / "frontend"
+    html = (web / "index.html").read_text(encoding="utf8")
+    assert "googleapis" not in html and "gstatic" not in html and "http" not in html.replace("http-equiv", "")
+    assert "@fontsource-variable/hanken-grotesk" in (web / "src" / "main.tsx").read_text(encoding="utf8")
