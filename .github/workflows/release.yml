@@ -7,6 +7,8 @@ name: Release installer
 on:
   push:
     branches: [main]
+  pull_request:
+    paths: ["backend/**", "frontend/**", "installer/**", ".github/workflows/release.yml"]
   workflow_dispatch:
 
 permissions:
@@ -35,20 +37,20 @@ jobs:
           if ($exists) { Write-Host "Release v$v already exists: bump the version to publish a new one." }
 
       - uses: actions/setup-node@v4
-        if: steps.ver.outputs.publish == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.ver.outputs.publish == 'true' || github.event_name != 'push'
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - uses: actions/setup-python@v5
-        if: steps.ver.outputs.publish == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.ver.outputs.publish == 'true' || github.event_name != 'push'
         with:
           python-version: "3.12"
       - name: Install Inno Setup
-        if: steps.ver.outputs.publish == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.ver.outputs.publish == 'true' || github.event_name != 'push'
         run: choco install innosetup -y --no-progress
       - name: Build installer
-        if: steps.ver.outputs.publish == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.ver.outputs.publish == 'true' || github.event_name != 'push'
         shell: pwsh
         run: ./installer/build.ps1 -Version "${{ steps.ver.outputs.version }}"
 

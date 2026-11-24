@@ -46,6 +46,9 @@ build output, local state, secrets or machine-specific (for example `installer/o
 `.exe` files, caches or credentials. Add the `.gitignore` change in the same push.
 
 ## Other conventions
+- The packaged exe must pass `AlaEhBackup.exe --selftest` (run by `installer/build.ps1`, and by the release workflow on every pull request
+  that touches the app). Keep `--collect-all cryptography` in the PyInstaller command and add every new native or hidden dependency
+  to the self-test in `backend/desktop.py`. A build that fails it must never become an installer.
 - Wireless backup (`backend/pki.py`, `agent.py`, `remote.py`): the agent is READ-ONLY and must stay that way. Keep every path
   check (`Agent.resolve`, `DENY_NAMES`, the app's own data folder), the LAN-only check, the certificate pinning in
   `remote._connect`, and `clean_remote_rel` for names that come from another PC. Never add an endpoint that writes,
