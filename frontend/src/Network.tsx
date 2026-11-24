@@ -11,16 +11,27 @@ interface Agent {
   connected: { id: string; name: string; seconds_ago: number; reading: string }[];
   log: { at: string; who: string; what: string; path: string; status: number }[]; fingerprint: string;
 }
-interface Peer { id: string; name: string; host: string; port: number; fingerprint: string; added: string; last_seen: string; roots: string[] }
+interface Peer {
+  id: string; name: string; host: string; port: number; fingerprint: string; added: string; last_seen: string; roots: string[];
+  state: "online" | "off" | "offline" | "removed" | "changed" | "error" | "unknown"; state_text: string; checked_at: number | null;
+  scans: Record<string, { at: number; files: number; bytes: number }>;
+}
 interface Found { id: string; name: string; host: string; port: number; paired: boolean }
 interface PeerRoots { roots: { label: string; chosen: boolean }[] }
 type Section = "peers" | "share" | "activity";
+
+/** How a paired PC is doing right now, as the app last asked it. */
+const stateTag: Record<Peer["state"], { cls: string; label: string }> = {
+  online: { cls: "backed_up", label: "Online" }, off: { cls: "lv-warn", label: "Sharing is off" }, offline: { cls: "lv-warn", label: "Not reachable" },
+  removed: { cls: "lv-error", label: "Pairing removed" }, changed: { cls: "lv-error", label: "Identity changed" }, error: { cls: "lv-warn", label: "Not checked" }, unknown: { cls: "", label: "Checking…" },
+};
+const when = (t: number) => new Date(t * 1000).toLocaleString();
 
 const hours = [{ value: "0", label: "Never (until I turn it off)" }, { value: "1", label: "After 1 hour" }, { value: "4", label: "After 4 hours" },
   { value: "8", label: "After 8 hours" }, { value: "24", label: "After 24 hours" }];
 
 /** The PCs this PC backs up: who is paired, which of their folders are chosen, and how to add another. */
-function Peers({ peers, reload }: { peers: Peer[] | null; reload: () => Promise<void> }) {
+function Peers({ peers, reload, checking }: { peers: Peer[] | null; reload: (check?: boolean) => Promise<void>; checking: boolean }) {
   const [err, setErr] = useState(""); const [msg, setMsg] = useState("");
   const [found, setFound] = useState<Found[] | null>(null); const [finding, setFinding] = useState(false);
   const [host, setHost] = useState(""); const [port, setPort] = useState("5200"); const [code, setCode] = useState(""); const [pairing, setPairing] = useState(false);
@@ -47,6 +58,7 @@ function Peers({ peers, reload }: { peers: Peer[] | null; reload: () => Promise<
     <Group title="PCs I back up" lead="Copy folders of another PC to this PC's backup drive over your network. This PC must be on and running the app while it backs up.">
       {msg && <p className="msg" role="status">{msg}</p>}
       <Cluster title="Paired PCs">
+        <div className="row"><button onClick={() => reload(true)} disabled={checking}>{checking ? "Checking…" : "Check now"}</button><span className="sub">Asks each PC whether it is on and sharing. Done by itself every few seconds while you look at this page.</span></div>
         {peers === null && <p className="sub">Loading…</p>}
         {peers && !peers.length && (
           <div className="blank"><b>No PC is paired yet.</b><span className="sub">On the other PC open Other PCs, turn on Share this PC and show a pairing code. Then add it below.</span></div>
@@ -56,9 +68,10 @@ function Peers({ peers, reload }: { peers: Peer[] | null; reload: () => Promise<
             {peers.map(p => (
               <li key={p.id}>
                 <div className="line">
-                  <span className="grow"><b>{p.name}</b> <span className="sub">{p.host}:{p.port}</span><br />
-                    <span className="sub">{p.roots.length ? `Backing up ${p.roots.join(", ")}.` : "No folders chosen yet."} {p.last_seen ? `Last reached ${p.last_seen}.` : ""}</span></span>
-                  <button onClick={() => chooseFolders(p.id)} aria-expanded={open === p.id}>{open === p.id ? "Close" : "Choose folders"}</button>
+                  <span className="grow"><b>{p.name}</b> <span className="sub">{p.host}:{p.port}</span> <span className={"tag " + stateTag[p.state].cls}>{stateTag[p.state].label}</span><br />
+                    <span className="sub">{p.state === "online" || p.state === "unknown" ? "" : p.state_text + " "}{p.roots.length ? `Backing up ${p.roots.join(", ")}.` : "No folders chosen yet."} {p.last_seen ? `Last reached ${p.last_seen}.` : ""}</span>
+                    {p.roots.filter(r => p.scans[r]).map(r => <span key={r} className="sub"><br />{r}: {p.scans[r].files.toLocaleString()} files, last scanned {when(p.scans[r].at)}{p.state !== "online" && p.state !== "unknown" ? " (old: that PC cannot be reached now)" : ""}</span>)}</span>
+                  <button onClick={() => chooseFolders(p.id)} aria-expanded={open === p.id} disabled={p.state !== "online" && p.state !== "unknown"} title={p.state === "online" || p.state === "unknown" ? undefined : p.state_text}>{open === p.id ? "Close" : "Choose folders"}</button>
                   <button onClick={() => forget(p)}>Forget</button>
                 </div>
                 {open === p.id && (
@@ -176,17 +189,23 @@ export function Network() {
   const [agent, setAgent] = useState<Agent | null>(null); const [agentErr, setAgentErr] = useState("");
   const [peers, setPeers] = useState<Peer[] | null>(null);
   const loadAgent = useCallback(async () => { try { setAgent(await api<Agent>("/api/agent")); } catch (e) { setAgentErr((e as Error).message); } }, []);
-  const loadPeers = useCallback(async () => { try { setPeers(await api<Peer[]>("/api/peers")); } catch (e) { setAgentErr((e as Error).message); } }, []);
-  useEffect(() => { loadAgent(); loadPeers(); const t = setInterval(loadAgent, 3000); return () => clearInterval(t); }, [loadAgent, loadPeers]);
+  const [checking, setChecking] = useState(false);
+  const loadPeers = useCallback(async (check = false) => {
+    if (check) setChecking(true);
+    try { setPeers(await api<Peer[]>("/api/peers" + (check ? "?check=1" : ""))); } catch (e) { setAgentErr((e as Error).message); }
+    setChecking(false);
+  }, []);
+  useEffect(() => { loadAgent(); loadPeers().then(() => loadPeers(true)); const t = setInterval(loadAgent, 3000); return () => clearInterval(t); }, [loadAgent, loadPeers]);   // show the list at once, then ask each PC
+  useEffect(() => { if (section !== "peers") return; const t = setInterval(() => loadPeers(true), 15000); return () => clearInterval(t); }, [section, loadPeers]);
   const act = async (path: string, body?: unknown) => { try { setAgentErr(""); setAgent(await api<Agent>(path, "POST", body ?? {})); } catch (e) { setAgentErr((e as Error).message); } };
   const items = [
-    { key: "peers", label: "PCs I back up", hint: peers ? (peers.length ? `${peers.length} paired` : "None yet") : undefined },
+    { key: "peers", label: "PCs I back up", hint: peers ? (peers.length ? `${peers.length} paired${peers.some(p => p.state !== "online" && p.state !== "unknown") ? ", one away" : ""}` : "None yet") : undefined },
     { key: "share", label: "Share this PC", hint: agent ? (agent.running ? (agent.connected.length ? `On, ${agent.connected.length} connected` : "On") : "Off") : undefined },
     { key: "activity", label: "Activity", hint: agent?.log.length ? `${agent.log.length} recent` : undefined },
   ];
   return (
     <Panel items={items} current={section} onChange={k => setSection(k as Section)} label="Other PCs sections">
-      {section === "peers" && <Peers peers={peers} reload={loadPeers} />}
+      {section === "peers" && <Peers peers={peers} reload={loadPeers} checking={checking} />}
       {section === "share" && <Share a={agent} act={act} err={agentErr} />}
       {section === "activity" && <Activity a={agent} />}
     </Panel>

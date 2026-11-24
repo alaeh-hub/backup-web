@@ -88,6 +88,10 @@ How it stays safe:
 - B shows who is connected and a log of every request. Sharing turns itself off after a few hours unless you choose otherwise.
 - File names sent by another PC are checked before they become paths on A's drive.
 
+Each paired PC shows its state: **Online**, **Sharing is off**, **Not reachable** (off, asleep or on another network), or **Pairing removed**. If a PC
+is away when you scan, its files stay listed from the last scan, are marked as old, are not counted as waiting to back up, and
+the app says so; they are scanned again as soon as the PC is back. Backups already made stay restorable.
+
 Needs: both PCs on the same Wi-Fi or network, B on and awake, and this app running on A while it backs up. The first time,
 Windows asks whether to allow the app: allow **private networks** only. `BACKUP_SHARE_HOST` limits sharing to one address.
 Not covered yet: the internet (use a VPN), files other programs keep open, and system folders.

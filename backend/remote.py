@@ -2,7 +2,7 @@
 
 Every connection shows this PC's certificate (so the other PC knows who is asking) and checks that the other PC's
 certificate is the one remembered at pairing, BEFORE anything is sent. A different certificate is refused."""
-import hmac, http.client, json, re, socket, time
+import hmac, http.client, json, re, socket, threading, time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode
@@ -16,7 +16,12 @@ ID_A, ID_B = agent_mod.ID_A, agent_mod.ID_B
 
 
 class RemoteError(Exception):
-    pass
+    """kind says why: 'refused' (the PC answers but sharing is off), 'unreachable' (no answer at all), 'rejected' (it no longer
+    accepts this PC), 'identity' (not the PC that was paired) or 'other'."""
+
+    def __init__(self, message, kind="other"):
+        super().__init__(message)
+        self.kind = kind
 
 
 class PeerStore:
@@ -24,6 +29,7 @@ class PeerStore:
 
     def __init__(self, path_fn):
         self.path_fn = path_fn
+        self.lock = threading.RLock()                   # several PCs are asked at once: their updates must not trample each other
 
     def all(self):
         try:
@@ -42,19 +48,22 @@ class PeerStore:
         tmp.replace(p)
 
     def add(self, peer):
-        peers = [p for p in self.all() if p["id"] != peer["id"]]
-        peers.append(peer)
-        self._save(peers)
+        with self.lock:
+            peers = [p for p in self.all() if p["id"] != peer["id"]]
+            peers.append(peer)
+            self._save(peers)
 
     def update(self, pid, **kw):
-        peers = self.all()
-        for p in peers:
-            if p["id"] == pid:
-                p.update(kw)
-        self._save(peers)
+        with self.lock:
+            peers = self.all()
+            for p in peers:
+                if p["id"] == pid:
+                    p.update(kw)
+            self._save(peers)
 
     def remove(self, pid):
-        self._save([p for p in self.all() if p["id"] != pid])
+        with self.lock:
+            self._save([p for p in self.all() if p["id"] != pid])
 
 
 def _connect(host, port, identity, expect_fp=None, timeout=15):
@@ -65,10 +74,11 @@ def _connect(host, port, identity, expect_fp=None, timeout=15):
         fp = pki.fingerprint(conn.sock.getpeercert(binary_form=True))
     except (OSError, ValueError) as e:
         conn.close()
-        raise RemoteError(f"Cannot reach {host}:{port} ({e.__class__.__name__}: {e}). Is sharing on, and are both PCs on the same network?") from e
+        raise RemoteError(f"Cannot reach {host}:{port} ({e.__class__.__name__}: {e}). Is sharing on, and are both PCs on the same network?",
+                          "refused" if isinstance(e, ConnectionRefusedError) else "unreachable") from e
     if expect_fp and fp != expect_fp:
         conn.close()
-        raise RemoteError("That PC's identity is not the one you paired with. It was reinstalled or something is pretending to be it, so nothing was sent.")
+        raise RemoteError("That PC's identity is not the one you paired with. It was reinstalled or something is pretending to be it, so nothing was sent.", "identity")
     conn.fp = fp
     return conn
 
@@ -80,7 +90,7 @@ def _json(resp):
     except ValueError:
         data = {}
     if resp.status != 200:
-        raise RemoteError(data.get("error") or f"the other PC answered {resp.status}")
+        raise RemoteError(data.get("error") or f"the other PC answered {resp.status}", "rejected" if resp.status == 401 else "other")
     return data
 
 
@@ -157,7 +167,7 @@ class RemoteFile:
         try:
             return self.resp.read(n if n and n > 0 else None)
         except (OSError, http.client.HTTPException) as e:
-            raise RemoteError(f"The connection to the other PC dropped while reading ({e.__class__.__name__}).") from e
+            raise RemoteError(f"The connection to the other PC dropped while reading ({e.__class__.__name__}).", "unreachable") from e
 
     def close(self):
         try:
@@ -173,19 +183,19 @@ class RemoteFile:
 
 
 class RemoteClient:
-    def __init__(self, peer, identity, store=None):
-        self.peer, self.identity, self.store = peer, identity, store
+    def __init__(self, peer, identity, store=None, timeout=15):
+        self.peer, self.identity, self.store, self.timeout = peer, identity, store, timeout
 
     def _open(self, method, path, params=None, body=None):
         url = path + ("?" + urlencode(params) if params else "")
         last = None
         for attempt in range(2):                      # the second try follows a change of the other PC's address
             try:
-                conn = _connect(self.peer["host"], self.peer["port"], self.identity, expect_fp=self.peer["fp"])
+                conn = _connect(self.peer["host"], self.peer["port"], self.identity, expect_fp=self.peer["fp"], timeout=self.timeout)
                 break
             except RemoteError as e:
                 last = e
-                if "identity is not" in str(e) or attempt or not self._find_new_address():
+                if e.kind in ("identity", "refused") or attempt or not self._find_new_address():
                     raise
         else:
             raise last
@@ -194,7 +204,7 @@ class RemoteClient:
             resp = conn.getresponse()
         except (OSError, http.client.HTTPException) as e:
             conn.close()
-            raise RemoteError(f"The other PC refused or dropped the connection ({e.__class__.__name__}). Its pairing with this PC may have been removed.") from e
+            raise RemoteError(f"The other PC refused or dropped the connection ({e.__class__.__name__}). Its pairing with this PC may have been removed.", "rejected") from e
         if self.store:
             self.store.update(self.peer["id"], last_seen=datetime.now().isoformat(sep=" ", timespec="seconds"))
         return conn, resp
@@ -257,8 +267,8 @@ class RemoteClient:
                 else:
                     yield (d["p"], d["s"], d["m"])
             if not done:
-                raise RemoteError("The list from the other PC was cut short.")
+                raise RemoteError("The list from the other PC was cut short.", "unreachable")
         except (OSError, http.client.HTTPException, ValueError) as e:
-            raise RemoteError(f"The connection to the other PC dropped during the scan ({e.__class__.__name__}).") from e
+            raise RemoteError(f"The connection to the other PC dropped during the scan ({e.__class__.__name__}).", "unreachable") from e
         finally:
             conn.close()
