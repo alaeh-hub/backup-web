@@ -19,7 +19,7 @@ Closing the window stops the app, and scheduled scans only run while it is open.
   Settings and history are kept in `~/.ala-eh-backup`. Versions older than 1.2.0 cannot update themselves: reinstall once.
 - The installer is not code-signed, so Windows SmartScreen may warn: choose **More info**, then **Run anyway**.
 - The app always runs on the PC it backs up. A deployed site (for example Vercel) shows only the download page,
-  because a server cannot see your files. On `localhost`/`127.0.0.1` (dev server or the installed app) you get the full app.
+  because a server cannot see your files. On `localhost`/`127.0.0.1` (dev server or the installed app) you get the full app; add `?download` to the address (`http://127.0.0.1:5174/?download`) to preview the download page.
 
 ## Run from source (development)
 
