@@ -165,12 +165,10 @@ def test_an_interrupted_copy_keeps_the_old_backup(rig, monkeypatch):
     bump(p)
     backup.scan_job()
 
-    def boom(src, dst, **kw):
-        with open(dst, "w") as f:
-            f.write("partial")
+    def boom(src, dst, **kw):          # the copy is written, then the drive fails while it is being finished
         raise OSError("disk full")
 
-    monkeypatch.setattr(shutil, "copy2", boom)
+    monkeypatch.setattr(shutil, "copystat", boom)
     backup.backup_job()
     monkeypatch.undo()
     assert target.read_text() == "good copy"
@@ -238,7 +236,7 @@ def test_labels_are_safe_and_unique():
 # ---------------------------------------------------------------- who may call the API
 
 def test_other_sites_cannot_use_the_api(rig):
-    assert rig.client.get("/api/job", headers={"Host": "evil.example:5000"}).status_code == 403
+    assert rig.client.get("/api/job", headers={"Host": "evil.example:5001"}).status_code == 403
     assert rig.post("/api/scan", headers={"Origin": "http://evil.example"}).status_code == 403
     assert rig.post("/api/job/cancel", headers={"Origin": "http://127.0.0.1:5174"}).status_code == 204   # the dev page
     assert rig.post("/api/job/cancel", headers={"Origin": "http://127.0.0.1:3000"}).status_code == 403
@@ -262,6 +260,193 @@ def test_wrong_passwords_are_throttled(rig, monkeypatch):
     assert rig.get("/api/job").status_code == 200
     monkeypatch.setattr(backup, "TOKENS", set())
     assert rig.get("/api/job").status_code == 401
+
+
+# ---------------------------------------------------------------- self-update
+
+def test_update_versions_and_trust():
+    import updater
+    assert updater.parse("v1.10.0") > updater.parse("1.9.9") and updater.parse("1.2") == (1, 2, 0)
+    assert updater.trusted("https://github.com/x/y/releases/download/v1/a.exe")
+    assert updater.trusted("https://objects.githubusercontent.com/a")
+    assert not updater.trusted("http://github.com/a") and not updater.trusted("https://evil.example/github.com")
+    assert not updater.trusted("https://github.com.evil.example/a")
+
+
+def test_update_status_and_install_guard(rig, monkeypatch):
+    import updater
+    monkeypatch.setattr(updater, "current_version", lambda: "1.1.0")
+    release = {"version": "1.2.0", "page": updater.PAGE, "notes": "n", "url": "https://github.com/a/b/releases/download/v1.2.0/AlaEhBackup-Setup.exe", "size": 1, "sha256": ""}
+    monkeypatch.setattr(updater, "fetch_latest", lambda: release)
+    st = rig.get("/api/update?force=1").json
+    assert st["available"] and st["latest"] == "1.2.0" and st["current"] == "1.1.0" and not st["can_install"]
+    assert rig.post("/api/update/install").status_code == 400          # only the installed exe may self-update
+    release["version"] = "1.1.0"
+    assert not rig.get("/api/update?force=1").json["available"]
+    monkeypatch.setattr(updater, "fetch_latest", lambda: (_ for _ in ()).throw(OSError("offline")))
+    st = rig.get("/api/update?force=1").json
+    assert not st["available"] and "Could not check" in st["error"]      # offline never breaks the app
+    body = {**rig.get("/api/settings").json, "update_check": False}
+    assert rig.post("/api/settings", body).json["update_check"] is False
+    assert rig.get("/api/update?force=1").json["enabled"] is False
+
+
+def test_update_download_checks_integrity(tmp_path, monkeypatch):
+    import hashlib, io, updater
+
+    class Resp(io.BytesIO):
+        def __init__(self, data, url): super().__init__(data); self._u = url
+        def geturl(self): return self._u
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(updater.tempfile, "gettempdir", lambda: str(tmp_path))      # never touch the real temp folder
+    data = b"installer-bytes"
+    ok = {"url": "https://github.com/a/b/releases/download/v1/AlaEhBackup-Setup.exe", "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    path = updater.download(ok, opener=lambda req, timeout: Resp(data, ok["url"]))
+    assert path.read_bytes() == data
+    for bad in ({**ok, "sha256": "0" * 64}, {**ok, "size": 3}, {**ok, "sha256": ""}, {**ok, "size": 0}):
+        with pytest.raises(RuntimeError):
+            updater.download(bad, opener=lambda req, timeout: Resp(data, ok["url"]))
+    with pytest.raises(RuntimeError):                                    # redirected off GitHub
+        updater.download(ok, opener=lambda req, timeout: Resp(data, "https://evil.example/x"))
+
+
+def test_update_installer_kills_leftover_wrapper_first(monkeypatch):
+    import updater
+    seen = {}
+    monkeypatch.setattr(updater.subprocess, "Popen", lambda cmd, **kw: seen.update(cmd=cmd))
+    updater.run_installer(r"C:	mp\AlaEhBackup-Setup.exe")
+    cmd = seen["cmd"]
+    assert "taskkill /F /IM" in cmd and cmd.index("taskkill") < cmd.index("AlaEhBackup-Setup.exe")
+    assert " /T " not in cmd          # /T would kill the helper too: it is a child of the app
+    assert "/SILENT" in cmd
+
+
+def test_update_picks_highest_version_not_latest_published():
+    import io, json, updater
+
+    def rel(tag, **kw):
+        base = {"tag_name": tag, "draft": False, "prerelease": False, "html_url": f"https://github.com/alaeh-hub/backup-web/releases/tag/{tag}", "body": "",
+                "assets": [{"name": updater.ASSET, "size": 5, "browser_download_url": f"https://github.com/x/y/releases/download/{tag}/{updater.ASSET}"}]}
+        return {**base, **kw}
+
+    # newest-published first (as GitHub lists them), but 1.2.4 is the highest installable version
+    releases = [rel("v1.2.3"), rel("v9.9.9", draft=True), rel("v8.0.0", prerelease=True), rel("v7.0.0", assets=[]), rel("v1.2.10"), rel("v1.2.4")]
+    opener = lambda req, timeout: io.BytesIO(json.dumps(releases).encode())
+    assert updater.fetch_latest(opener)["version"] == "1.2.10"            # numeric compare: 10 > 4 > 3
+    assert updater.fetch_latest(lambda r, timeout: io.BytesIO(json.dumps(releases[:1] + releases[-1:]).encode()))["version"] == "1.2.4"
+    with pytest.raises(RuntimeError):
+        updater.fetch_latest(lambda r, timeout: io.BytesIO(b"[]"))
+
+
+def test_current_version_ignores_stale_stamp_when_running_from_source(monkeypatch):
+    import sys, updater
+    from pathlib import Path
+    stamp = Path(updater.__file__).parent / "_version.py"
+    existed = stamp.exists()
+    old = stamp.read_text() if existed else None
+    stamp.write_text('VERSION = "0.0.1-stale"\n')
+    try:
+        monkeypatch.delattr(sys, "frozen", raising=False)
+        assert updater.current_version() != "0.0.1-stale"
+    finally:
+        stamp.write_text(old) if existed else stamp.unlink()
+
+
+def test_status_reports_version_for_the_desktop_launcher(rig):
+    import updater
+    assert rig.get("/api/auth/status").json["version"] == updater.current_version()
+
+
+# ---------------------------------------------------------------- audit fixes
+
+def test_vercel_api_is_closed_without_a_password(rig, monkeypatch):
+    monkeypatch.setattr(backup, "ON_VERCEL", True)
+    r = rig.get("/api/stats")
+    assert r.status_code == 403 and "download page" in r.json["error"]
+    assert rig.post("/api/settings", {}).status_code == 403
+    assert rig.get("/api/auth/status").status_code == 403            # nothing under /api answers there
+
+
+def test_same_size_same_date_edit_is_caught_by_the_content_check(rig, monkeypatch):
+    p = rig.write("a.txt", "aaaa")
+    backup.scan_job()
+    rig.choose_all()
+    backup.backup_job()
+    st = os.stat(p)
+    p.write_text("bbbb")
+    os.utime(p, (st.st_atime, st.st_mtime))                          # a different file with the same size and date
+    backup.scan_job()
+    assert "Everything is already backed up" in backup.backup_job()  # default: size and date only (fast)
+    assert rig.drive_copy("a.txt").read_text() == "aaaa"
+    monkeypatch.setitem(backup.SETTINGS, "deep_check", True)
+    backup.backup_job()
+    assert rig.drive_copy("a.txt").read_text() == "bbbb"
+    assert "Everything is already backed up" in backup.backup_job()  # and then it is current again
+
+
+def test_a_file_that_changes_while_it_is_copied_is_refused(rig, tmp_path):
+    import hashlib
+    p = rig.write("a.txt", "hello")
+    backup.scan_job()
+    f = next(iter(backup.INDEX.values()))
+    part = tmp_path / "out.part"
+    assert backup.copy_hashed(f, part) == hashlib.sha256(b"hello").hexdigest()   # hash of the bytes copied
+    assert part.read_bytes() == b"hello"
+    p.write_text("hello world")                                      # edited after it was measured
+    with pytest.raises(RuntimeError, match="changed while"):
+        backup.copy_hashed(f, part)
+
+
+def test_overlapping_scan_roots_keep_the_backup_reachable(rig, monkeypatch):
+    rig.write("Docs/a.txt", "x")
+    monkeypatch.setitem(backup.SETTINGS, "sources", [str(rig.src), str(rig.src / "Docs")])
+    backup.scan_job()
+    assert len(backup.INDEX) == 1                                    # one file, not two records
+    rig.choose_all()
+    backup.backup_job()
+    f = next(iter(backup.INDEX.values()))
+    where = (f["label"], f["rel"])
+    monkeypatch.setitem(backup.SETTINGS, "sources", [str(rig.src / "Docs"), str(rig.src)])     # roots reordered
+    backup.scan_job()
+    f = next(iter(backup.INDEX.values()))
+    assert (f["label"], f["rel"]) == where                           # still filed where its copy is
+    path, _, _ = backup.find_backup(str(rig.dest), f)
+    assert path and path.exists() and backup.status(f, [str(rig.dest)]) == "backed_up"
+
+
+def test_a_source_inside_the_backup_drive_is_refused(rig):
+    base = rig.get("/api/settings").json
+    for src in (rig.dest, rig.dest / "stuff"):
+        r = rig.post("/api/settings", {**base, "sources": [str(src)], "destinations": [str(rig.dest)]})
+        assert r.status_code == 400 and "outside" in r.json["error"]
+    ok = rig.post("/api/settings", {**base, "sources": [str(rig.root)], "destinations": [str(rig.dest)]})
+    assert ok.status_code == 200                                     # the drive inside a scanned folder is fine: it is skipped
+
+
+def test_restore_only_lists_files_that_are_on_the_chosen_drive(rig, monkeypatch):
+    rig.write("a.txt", "x")
+    backup.scan_job()
+    rig.choose_all()
+    backup.backup_job()                                              # backed up to dest only
+    other = rig.root / "other-drive"
+    other.mkdir()
+    monkeypatch.setitem(backup.SETTINGS, "destinations", [str(rig.dest), str(other)])
+    here = rig.get("/api/files", query_string={"status": "has_backup", "dest": str(rig.dest)}).json
+    there = rig.get("/api/files", query_string={"status": "has_backup", "dest": str(other)}).json
+    assert here["total"] == 1 and there["total"] == 0
+    assert rig.get("/api/files?status=has_backup").json["total"] == 1
+
+
+def test_organize_does_not_reread_its_own_output(rig, monkeypatch, tmp_path):
+    target = tmp_path / "organized"
+    (target / "Documents" / "2026").mkdir(parents=True)
+    (target / "Documents" / "2026" / "x.pdf").write_text("x")
+    monkeypatch.setattr(backup, "organize_roots", lambda scope: [str(target)])     # the target is itself a scanned folder
+    for _ in range(2):
+        assert "0 copied" in backup.organize_job("personal", str(target))
+    assert sorted(p.name for p in (target / "Documents" / "2026").iterdir()) == ["x.pdf"]
 
 
 import pytest

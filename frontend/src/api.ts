@@ -18,6 +18,7 @@ export interface Dest { path: string; label?: string; pc_folder?: string; free: 
 export interface Stats {
   files: number; total_bytes: number; selected_files: number; selected_bytes: number; pending_files: number; pending_bytes: number;
   backed_files: number; backed_bytes: number; new_files: number; review_files: number; review_bytes: number; skipped_files: number; skipped_bytes: number; pc_name: string; last_backup: string | null; next_run: string | null;
+  sharing?: boolean; sharing_connected?: number;
   history: { day: string; bytes: number }[]; largest_files: { path: string; size: number }[];
   largest_folders: { name: string; size: number }[]; destinations: Dest[];
 }
@@ -35,8 +36,9 @@ export function eta(job: Job): string {
 }
 export interface Settings {
   sources: string[]; destinations: string[]; excludes: string[]; max_size_mb: number; versions: number; compress: string; compress_formats: { id: string; label: string; available: boolean }[];
-  schedule: { enabled: boolean; time: string; days: number[] }; auto_scan_minutes: number; webhook: string; whole_pc: boolean; scan_roots: string[]; skip_junk: boolean; new_files: "review" | "include"; junk_list: string[]; pc_name: string; data_dir: string; auth_required: boolean;
+  schedule: { enabled: boolean; time: string; days: number[] }; auto_scan_minutes: number; webhook: string; whole_pc: boolean; scan_roots: string[]; skip_junk: boolean; new_files: "review" | "include"; junk_list: string[]; pc_name: string; data_dir: string; auth_required: boolean; update_check: boolean; deep_check: boolean;
 }
+export interface UpdateInfo { enabled: boolean; current: string; latest: string; available: boolean; can_install: boolean; page: string; notes: string; error: string }
 export interface LogRow { at: string; level: "info" | "warn" | "error"; action: string; message: string }
 export interface FolderRow { name: string; path: string; files: number; bytes: number; selected: number; review: number }
 export interface Explore { path: string; parent: string | null; total_files: number; folders: FolderRow[]; files: FileRow[] }

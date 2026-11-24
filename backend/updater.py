@@ -1,0 +1,111 @@
+"""Self-update for the installed Windows app: asks GitHub for the latest release and can run its installer."""
+import hashlib, json, os, re, shutil, subprocess, sys, tempfile, urllib.request
+from pathlib import Path
+from urllib.parse import urlsplit
+
+REPO = "alaeh-hub/backup-web"
+API = f"https://api.github.com/repos/{REPO}/releases"
+ASSET = "AlaEhBackup-Setup.exe"
+PAGE = f"https://github.com/{REPO}/releases/latest"
+TRUSTED = ("github.com", "githubusercontent.com")          # the installer may only come from GitHub
+
+
+def current_version():
+    """The version baked into the exe at build time, else frontend/package.json (running from source)."""
+    if getattr(sys, "frozen", False):
+        try:
+            from _version import VERSION                  # written by installer/build.ps1, not committed
+            return VERSION
+        except ImportError:
+            pass                                          # (running from source ignores a stale leftover file)
+    try:
+        pkg = Path(__file__).resolve().parent.parent / "frontend" / "package.json"
+        return str(json.loads(pkg.read_text("utf8")).get("version", "0.0.0"))
+    except (OSError, ValueError):
+        return "0.0.0"
+
+
+def parse(v):
+    nums = re.findall(r"\d+", str(v).split("-")[0])[:3]
+    return tuple(int(n) for n in nums) + (0,) * (3 - len(nums))
+
+
+def can_install():
+    return bool(getattr(sys, "frozen", False)) and os.name == "nt"
+
+
+def trusted(url):
+    p = urlsplit(url)
+    host = (p.hostname or "").lower()
+    return p.scheme == "https" and any(host == h or host.endswith("." + h) for h in TRUSTED)
+
+
+def fetch_latest(opener=urllib.request.urlopen):
+    """The release with the highest version number that has the installer: {version, page, notes, url, size, sha256}.
+    GitHub's own "latest" is the most recently published one, which is not always the highest version, and a PC that
+    skipped versions must still jump straight to the newest."""
+    req = urllib.request.Request(API + "?per_page=30", headers={"Accept": "application/vnd.github+json", "User-Agent": "ala-eh-backup-updater"})
+    with opener(req, timeout=8) as r:
+        releases = json.loads(r.read().decode("utf8"))
+    best = None
+    for data in releases if isinstance(releases, list) else []:
+        if data.get("draft") or data.get("prerelease"):
+            continue
+        asset = next((a for a in data.get("assets", []) if a.get("name") == ASSET), None)
+        ver = str(data.get("tag_name", "")).lstrip("vV")
+        if not asset or not re.fullmatch(r"\d+(\.\d+){0,2}", ver):
+            continue
+        if best is None or parse(ver) > parse(best[0]):
+            best = (ver, data, asset)
+    if not best:
+        raise RuntimeError("No release with an installer found.")
+    ver, data, asset = best
+    digest = str(asset.get("digest") or "")
+    url = asset.get("browser_download_url")
+    return {
+        "version": ver,
+        "page": data.get("html_url") if trusted(str(data.get("html_url", ""))) else PAGE,
+        "notes": str(data.get("body") or "")[:2000],
+        "url": url if trusted(str(url or "")) else None,
+        "size": int(asset.get("size") or 0),
+        "sha256": digest.split(":", 1)[1].lower() if digest.startswith("sha256:") else "",
+    }
+
+
+def download(release, opener=urllib.request.urlopen):
+    """Save the installer to a temp folder and check it is the file GitHub announced. Returns its path."""
+    if not release.get("url"):
+        raise RuntimeError("This release has no installer attached.")
+    for old in Path(tempfile.gettempdir()).glob("ala-eh-update-*"):       # leftovers of earlier updates
+        shutil.rmtree(old, ignore_errors=True)
+    if not release.get("size") or not release.get("sha256"):
+        raise RuntimeError("This release has no size or SHA-256 checksum to verify, so it was not installed.")
+    folder = Path(tempfile.mkdtemp(prefix="ala-eh-update-"))
+    path = folder / ASSET
+    req = urllib.request.Request(release["url"], headers={"User-Agent": "ala-eh-backup-updater"})
+    sha, size = hashlib.sha256(), 0
+    with opener(req, timeout=60) as r, open(path, "wb") as f:
+        if not trusted(r.geturl()):
+            raise RuntimeError("The download was redirected to an untrusted site.")
+        while chunk := r.read(1 << 20):
+            f.write(chunk)
+            sha.update(chunk)
+            size += len(chunk)
+    if release.get("size") and size != release["size"]:
+        raise RuntimeError("The download is incomplete. Try again.")
+    if release.get("sha256") and sha.hexdigest() != release["sha256"]:
+        raise RuntimeError("The download failed its integrity check, so it was not installed.")
+    return path
+
+
+def run_installer(path, exe=None):
+    """Hand over to a detached helper: it waits for this app to answer the browser, kills every AlaEhBackup.exe
+    (the PyInstaller exe is a wrapper plus the app, and a leftover wrapper would lock the file the installer
+    replaces), then runs the installer silently. The installer reopens the app when it is done.
+    No /T on taskkill: this helper is a CHILD of the app, and killing the process tree would kill the helper itself
+    before it starts the installer (this is exactly what broke the 1.2.3-1.2.5 updates)."""
+    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    exe = exe or (Path(sys.executable).name if getattr(sys, "frozen", False) else "AlaEhBackup.exe")
+    steps = (f'ping -n 4 127.0.0.1 >nul & taskkill /F /IM "{exe}" >nul 2>&1 & ping -n 3 127.0.0.1 >nul & '
+             f'"{path}" /SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS')
+    subprocess.Popen(f'cmd.exe /d /s /c "{steps}"', creationflags=flags, close_fds=True)

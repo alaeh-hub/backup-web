@@ -77,13 +77,13 @@ const HOURS: Opt[] = Array.from({ length: 24 }, (_, i) => ({ value: two(i), labe
 const MINUTES: Opt[] = Array.from({ length: 60 }, (_, i) => ({ value: two(i), label: two(i) }));
 
 /** A 24 hour time of day, chosen with two drop-downs instead of the browser's own picker. */
-export function TimeField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+export function TimeField({ value, onChange, label = "Time" }: { value: string; onChange: (v: string) => void; label?: string }) {
   const [h, m] = /^\d\d:\d\d$/.test(value) ? value.split(":") : ["22", "00"];
   return (
     <div className="time">
-      <Select label="Hour" value={h} options={HOURS} onChange={v => onChange(`${v}:${m}`)} />
+      <Select label={label + ", hour"} value={h} options={HOURS} onChange={v => onChange(`${v}:${m}`)} />
       <span aria-hidden="true">:</span>
-      <Select label="Minute" value={m} options={MINUTES} onChange={v => onChange(`${h}:${v}`)} />
+      <Select label={label + ", minute"} value={m} options={MINUTES} onChange={v => onChange(`${h}:${v}`)} />
     </div>
   );
 }

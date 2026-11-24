@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
-import { api, eta, fmt, Job, Stats } from "./api";
+import { api, eta, fmt, Job, Stats, UpdateInfo } from "./api";
 import { Dashboard } from "./Dashboard";
 import { Files } from "./Files";
 import { Review } from "./Review";
@@ -8,12 +8,13 @@ import { Restore } from "./Restore";
 import { Devices } from "./Devices";
 import { Organize } from "./Organize";
 import { Logs } from "./Logs";
+import { Network } from "./Network";
 import { SettingsTab } from "./SettingsTab";
 import { Icon, Page, reduced } from "./ui";
 import { DialogHost } from "./Dialog";
 import { animate } from "animejs";
 
-type Tab = "dashboard" | "review" | "selected" | "files" | "restore" | "devices" | "organize" | "logs" | "settings";
+type Tab = "dashboard" | "review" | "selected" | "files" | "restore" | "devices" | "organize" | "logs" | "settings" | "network";
 const tabs: { key: Tab; label: string; icon: string; title: string; hint: string }[] = [
   { key: "dashboard", label: "Overview", icon: "overview", title: "Overview", hint: "What is backed up, what is waiting and where it goes." },
   { key: "review", label: "New files", icon: "inbox", title: "New files", hint: "Found since your last decision. Back them up or skip them." },
@@ -24,11 +25,8 @@ const tabs: { key: Tab; label: string; icon: string; title: string; hint: string
   { key: "organize", label: "Organize", icon: "organize", title: "Organize", hint: "Gather documents, pictures and videos into one sorted folder." },
   { key: "logs", label: "Logs", icon: "log", title: "Logs", hint: "Everything the tool has done, newest first." },
   { key: "settings", label: "Settings", icon: "settings", title: "Settings", hint: "Backup drives, rules, schedule and notifications." },
+  { key: "network", label: "Other PCs", icon: "network", title: "Other PCs", hint: "Back up another PC over your network, or let one back up this PC." },
 ];
-/** Where the Windows installer is published (GitHub Releases: attach AlaEhBackup-Setup.exe to the latest release). */
-const INSTALLER_URL = "https://github.com/alaeh-hub/backup-web/releases/latest/download/AlaEhBackup-Setup.exe";
-/** The installer is only offered on the hosted site; the installed app already runs on this PC. */
-const HOSTED = !["localhost", "127.0.0.1", "::1", "[::1]"].includes(location.hostname);
 const idle: Job = { state: "idle", type: "", message: "", done: 0, total: 0 };
 
 function Login({ onOk }: { onOk: () => void }) {
@@ -54,14 +52,25 @@ export default function App() {
   const [job, setJob] = useState<Job>(idle);
   const [msg, setMsg] = useState("");
   const [tick, setTick] = useState(0);
+  const [upd, setUpd] = useState<UpdateInfo | null>(null);
+  const [updating, setUpdating] = useState(false);
+  const [updErr, setUpdErr] = useState("");
+  const [updHidden, setUpdHidden] = useState(false);
   const prev = useRef<Job["state"]>("idle");
   const logo = useRef<HTMLImageElement>(null);
 
-  const checkAuth = useCallback(() => api<{ required: boolean; authed: boolean }>("/api/auth/status").then(a => setAuth(a.authed ? "ok" : "login")).catch(() => setAuth("error")), []);
+  const [appVersion, setAppVersion] = useState("");
+  const checkAuth = useCallback(() => api<{ required: boolean; authed: boolean; version?: string }>("/api/auth/status").then(a => { setAppVersion(a.version ?? ""); setAuth(a.authed ? "ok" : "login"); }).catch(() => setAuth("error")), []);
   useEffect(() => { checkAuth(); const f = () => setAuth("login"); window.addEventListener("unauth", f); return () => window.removeEventListener("unauth", f); }, [checkAuth]);
 
   const loadStats = useCallback(async () => { try { setStats(await api<Stats>("/api/stats")); } catch { /* the login screen handles 401 */ } }, []);
   const pollJob = useCallback(async () => { try { setJob(await api<Job>("/api/job")); } catch { /* ignore */ } }, []);
+  useEffect(() => { if (auth === "ok") api<UpdateInfo>("/api/update").then(setUpd).catch(() => { /* offline: no banner */ }); }, [auth]);
+  const installUpdate = async () => {
+    setUpdating(true); setUpdErr("");
+    try { await api("/api/update/install", "POST"); }       // the app closes and reopens by itself
+    catch (e) { setUpdErr((e as Error).message); setUpdating(false); }
+  };
   useEffect(() => {
     if (auth !== "ok") return;
     loadStats(); pollJob();
@@ -85,7 +94,7 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       if (e.ctrlKey || e.metaKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
-      const n = Number(e.key);
+      const n = e.key === "0" ? 10 : Number(e.key);
       if (n >= 1 && n <= tabs.length) setTab(tabs[n - 1].key);
     };
     window.addEventListener("keydown", onKey);
@@ -148,6 +157,8 @@ export default function App() {
               </>
             ) : <span className="sub">No backup drive set</span>}
             <span className="sub">Last backup: {stats?.last_backup ?? "never"}</span>
+            {stats?.sharing && <span className="warn">Sharing on{stats.sharing_connected ? `: ${stats.sharing_connected} connected` : ""}</span>}
+            {appVersion && <span className="sub">Version {appVersion}</span>}
           </div>
         </aside>
 
@@ -163,7 +174,6 @@ export default function App() {
               </AnimatePresence>
             </div>
             <div className="head-actions">
-              {HOSTED && <a className="btn" href={INSTALLER_URL} download title="Install the Windows app so it can back up this PC"><Icon name="download" /><span>Install<span className="hide-sm"> for Windows</span></span></a>}
               {busy && <button onClick={() => api("/api/job/cancel", "POST").catch(e => setMsg("Error: " + (e as Error).message))}><Icon name="cancel" /><span className="hide-sm">Cancel</span></button>}
               <button aria-label="Scan files" onClick={() => start("/api/scan")} disabled={busy}><Icon name="scan" /><span className="hide-sm">Scan files</span></button>
               <button className="primary" onClick={() => start("/api/backup")} disabled={busy || !stats?.files}><Icon name="backup" />Back up<span className="hide-sm"> now{stats?.pending_bytes ? ` (${fmt(stats.pending_bytes)})` : ""}</span></button>
@@ -171,6 +181,19 @@ export default function App() {
           </header>
 
           <main className="content">
+            {upd?.available && !updHidden && (
+              <div className="update" role="status">
+                <p><b>Update available: version {upd.latest}</b> <span className="sub">(you have {upd.current})</span>
+                  {updating ? " Downloading and installing... the app will reopen by itself." : ""}
+                  {updErr && <span className="err"> {updErr}</span>}</p>
+                <div className="update-actions">
+                  {upd.can_install
+                    ? <button className="primary" onClick={installUpdate} disabled={updating || busy} title={busy ? "Wait for the running job to finish" : undefined}>{updating ? "Updating..." : "Update now"}</button>
+                    : <a className="btn" href={upd.page} target="_blank" rel="noreferrer">See what is new</a>}
+                  {!updating && <button className="quiet" onClick={() => setUpdHidden(true)}>Later</button>}
+                </div>
+              </div>
+            )}
             {!busy && msg && <p className="msg" role="status">{msg}</p>}
             <Page key={["review", "selected", "files", "restore"].includes(tab) ? tab + ":" + tick : tab}>
               {tab === "dashboard" && <Dashboard stats={stats} busy={busy} go={setTab} onJob={onJob} />}
@@ -182,6 +205,7 @@ export default function App() {
               {tab === "organize" && <Organize busy={busy} onJob={onJob} />}
               {tab === "logs" && <Logs tick={tick} />}
               {tab === "settings" && <SettingsTab onSaved={loadStats} />}
+              {tab === "network" && <Network />}
             </Page>
           </main>
         </div>

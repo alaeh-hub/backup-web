@@ -1,18 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import { api, Settings } from "./api";
+import { api, Settings, UpdateInfo, useStored } from "./api";
+import { Cluster, Group, Panel, Row, Switch } from "./Panel";
 import { PathList } from "./PathList";
 import { Select, TimeField } from "./Select";
 
 let saves: Promise<unknown> = Promise.resolve();   // saves run one after another, and loading waits for them
 
 /** A number field that keeps what you type and only saves a real number. */
-function NumField({ value, onCommit, max }: { value: number; onCommit: (n: number) => void; max?: number }) {
+function NumField({ value, onCommit, max, label }: { value: number; onCommit: (n: number) => void; max?: number; label: string }) {
   const [raw, setRaw] = useState(String(value));
   useEffect(() => { setRaw(String(value)); }, [value]);
   const step = (d: number) => { const n = Math.max(0, (Number(raw) || 0) + d); setRaw(String(n)); onCommit(n); };
   return (
     <div className="num">
-      <input type="number" min={0} max={max} value={raw} onChange={e => { setRaw(e.target.value); if (e.target.value !== "" && !Number.isNaN(+e.target.value)) onCommit(Math.max(0, +e.target.value)); }} onBlur={() => setRaw(String(value))} />
+      <input type="number" aria-label={label} min={0} max={max} value={raw} onChange={e => { setRaw(e.target.value); if (e.target.value !== "" && !Number.isNaN(+e.target.value)) onCommit(Math.max(0, +e.target.value)); }} onBlur={() => setRaw(String(value))} />
       <button type="button" aria-label="Decrease" onClick={() => step(-1)}>-</button>
       <button type="button" aria-label="Increase" onClick={() => step(1)}>+</button>
     </div>
@@ -20,9 +21,11 @@ function NumField({ value, onCommit, max }: { value: number; onCommit: (n: numbe
 }
 
 const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+type Section = "backup" | "rules" | "schedule" | "alerts" | "app";
 
 export function SettingsTab({ onSaved }: { onSaved: () => void }) {
   const [s, setS] = useState<Settings | null>(null); const [msg, setMsg] = useState(""); const [excl, setExcl] = useState(""); const [loadErr, setLoadErr] = useState(""); const [again, setAgain] = useState(0);
+  const [section, setSection] = useStored<Section>("settings.section", "backup");
   const latest = useRef<{ s: Settings; excl: string } | null>(null); const dirty = useRef(false); const timer = useRef<number>();
   useEffect(() => {
     setLoadErr("");
@@ -36,61 +39,143 @@ export function SettingsTab({ onSaved }: { onSaved: () => void }) {
     try { const x = await job; setS(c => c && { ...c, scan_roots: x.scan_roots }); setMsg("Saved automatically."); onSaved(); }
     catch (e) { dirty.current = true; setMsg("Not saved: " + (e as Error).message); }
   };
-  const change = (n: Settings, e: string) => { latest.current = { s: n, excl: e }; dirty.current = true; setMsg("Saving..."); window.clearTimeout(timer.current); timer.current = window.setTimeout(send, 500); };
+  const change = (n: Settings, e: string) => { latest.current = { s: n, excl: e }; dirty.current = true; setMsg("Saving…"); window.clearTimeout(timer.current); timer.current = window.setTimeout(send, 500); };
   useEffect(() => () => { window.clearTimeout(timer.current); send(); }, []); // save pending changes when leaving the tab
+  // hooks must run before the early returns below, or React crashes (black screen) when the page finishes loading
+  const [ver, setVer] = useState<UpdateInfo | null>(null);
+  const [checking, setChecking] = useState(false);
+  const checkNow = async () => {
+    setChecking(true);
+    try { setVer(await api<UpdateInfo>("/api/update?force=1")); } catch { /* shown as unchecked */ }
+    setChecking(false);
+  };
+  useEffect(() => { api<UpdateInfo>("/api/update").then(setVer).catch(() => { /* offline */ }); }, []);
   if (loadErr) return <section className="block"><p className="err">Could not load the settings: {loadErr}</p><div><button onClick={() => setAgain(n => n + 1)}>Try again</button></div></section>;
-  if (!s) return <p className="sub">Loading...</p>;
+  if (!s) return (
+    <div className="panel" aria-busy="true"><div className="panel-nav skel" aria-hidden="true" /><div className="panel-body"><p className="sub">Loading the settings…</p></div></div>
+  );
   const set = (p: Partial<Settings>) => { const n = { ...s, ...p }; setS(n); change(n, excl); };
   const test = async () => {
     try { await send(); await api("/api/webhook/test", "POST"); setMsg("Test message sent."); }
     catch (e) { setMsg("Error: " + (e as Error).message); }
   };
+  const saved = <span className={"savestat" + (msg.startsWith("Not saved") || msg.startsWith("Error") ? " bad" : "")} role="status">{msg || "Changes are saved automatically."}</span>;
+  const items = [
+    { key: "backup", label: "Backup", hint: s.destinations.length ? `${s.destinations.length} ${s.destinations.length === 1 ? "drive" : "drives"}` : "No drive yet" },
+    { key: "rules", label: "Rules", hint: s.skip_junk ? "Junk skipped" : "Junk included" },
+    { key: "schedule", label: "Schedule", hint: s.schedule.enabled ? `Daily at ${s.schedule.time}` : "Off" },
+    { key: "alerts", label: "Alerts", hint: s.webhook ? "Webhook set" : "Not set" },
+    { key: "app", label: "App", hint: ver ? `Version ${ver.current}` : undefined },
+  ];
+  const day = (i: number, on: boolean) => set({ schedule: { ...s.schedule, days: on ? [...s.schedule.days, i].sort() : s.schedule.days.filter(x => x !== i) } });
   return (
-    <>
-      <section className="block">
-        <h2>What to scan</h2>
-        <label className="check"><input type="checkbox" checked={s.whole_pc} onChange={e => set({ whole_pc: e.target.checked })} /> Scan the whole PC (every internal drive{s.whole_pc ? ": " + s.scan_roots.join(", ") : ""})</label>
-        <p className="sub">Then click Scan files. Turn this off to scan only chosen folders.</p>
-      </section>
-      {!s.whole_pc && !s.sources.length && <p className="warn">No folders are chosen, so a scan would find nothing. Add a folder below or turn on Scan the whole PC.</p>}
-      {!s.whole_pc && <PathList title="Folders to scan" hint="Everything inside these folders is scanned." items={s.sources} onChange={v => set({ sources: v })} />}
-      <PathList title="Backup drives" hint="Files are copied to every drive listed, for example an external disk. The drive is remembered by its serial number, so it is found again if Windows gives it another letter." items={s.destinations} onChange={v => set({ destinations: v })} />
-      <section className="block">
-        <h2>This PC: {s.pc_name}</h2>
-        <p className="sub">Backups go into a folder named after this PC on each drive, so many PCs can share one drive.</p>
-        <label className="check"><input type="checkbox" checked={s.skip_junk} onChange={e => set({ skip_junk: e.target.checked })} /> Skip Windows, program files, caches, node_modules, temp and other junk (recommended)</label>
-        <details><summary className="sub">Show the built-in junk rules</summary><p className="sub">{s.junk_list.join(", ")}</p></details>
-        <label>When new files appear<Select label="When new files appear" value={s.new_files} onChange={v => set({ new_files: v as Settings["new_files"] })} options={[{ value: "review", label: "Hold them for review (recommended)" }, { value: "include", label: "Back them up automatically" }]} /></label>
-      </section>
-      <section className="block">
-        <h2>Rules</h2>
-        <label>Extra names to skip, one per line (wildcards allowed; start with / to match from the top of a drive)<textarea rows={5} value={excl} onChange={e => { setExcl(e.target.value); change(s, e.target.value); }} /></label>
-        <div className="fields">
-          <label>Skip files larger than (MB, 0 for no limit)<NumField value={s.max_size_mb} onCommit={n => set({ max_size_mb: n })} /></label>
-        </div>
-        <label>Compress backups (each backup run is saved as one archive per drive)<Select label="Compress backups" value={s.compress} onChange={v => set({ compress: v })} options={s.compress_formats.filter(f => f.available).map(f => ({ value: f.id, label: f.label }))} /></label>
-        <p className="sub">Everything backed up in one run is stored as a single archive in the _archives folder of this PC on the drive, with your folders kept inside it. Restore and Verify still work on single files. RAR is not offered because only WinRAR can create RAR files. Copies stored in the old format are still found and restored.</p>
-      </section>
-      <section className="block">
-        <h2>Scheduled scan</h2>
-        <label className="check"><input type="checkbox" checked={s.schedule.enabled} onChange={e => set({ schedule: { ...s.schedule, enabled: e.target.checked } })} /> Scan on a schedule (nothing is copied)</label>
-        <div className="fields">
-          <label>Time<TimeField value={s.schedule.time} onChange={v => set({ schedule: { ...s.schedule, time: v } })} /></label>
-          <label>Re-scan folders every (minutes, 0 for off)<NumField value={s.auto_scan_minutes} onCommit={n => set({ auto_scan_minutes: n })} /></label>
-        </div>
-        <div className="days">{days.map((d, i) => <label key={d} className="check"><input type="checkbox" checked={s.schedule.days.includes(i)} onChange={e => set({ schedule: { ...s.schedule, days: e.target.checked ? [...s.schedule.days, i] : s.schedule.days.filter(x => x !== i) } })} /> {d}</label>)}</div>
-        <p className="sub">The scan finds new files so they are waiting in New files before you back up. Nothing is copied to the backup drive until you click Back up now. The tool must be running at that time. If it was off, the scan runs when it starts that day.</p>
-      </section>
-      <section className="block">
-        <h2>Notifications</h2>
-        <label>Webhook URL (Slack, Discord or any service that accepts JSON)<input value={s.webhook} onChange={e => set({ webhook: e.target.value })} placeholder="https://" /></label>
-        <div><button onClick={test} disabled={!s.webhook}>Send test message</button></div>
-      </section>
-      <section className="block">
-        <p className="sub">Changes are saved automatically.</p>
-        {msg && <p className="msg" role="status">{msg}</p>}
-        <p className="sub">Tool data is stored in {s.data_dir}. {s.auth_required ? "Password protected." : "Set the BACKUP_PASSWORD environment variable to require a password."}</p>
-      </section>
-    </>
+    <Panel items={items} current={section} onChange={k => setSection(k as Section)} label="Settings sections">
+      {section === "backup" && (
+        <Group title="Backup" lead="Where backups go, and which files are looked at." aside={saved}>
+          <Cluster title="Where backups go">
+            <Row wide title="Backup drives" desc="Files are copied to every drive listed, for example an external disk. A drive is remembered by its serial number, so it is found again if Windows gives it another letter.">
+              <PathList bare title="Backup drives" hint="" items={s.destinations} onChange={v => set({ destinations: v })} />
+            </Row>
+            <Row title={`This PC: ${s.pc_name}`} desc="Backups go into a folder named after this PC on each drive, so many PCs can share one drive." />
+          </Cluster>
+          <Cluster title="What gets looked at">
+            <Row title="Scan the whole PC" desc={s.whole_pc ? `Every internal drive: ${s.scan_roots.join(", ")}. Then click Scan files.` : "Off: only the folders below are scanned."}>
+              <Switch checked={s.whole_pc} onChange={v => set({ whole_pc: v })} label="Scan the whole PC" />
+            </Row>
+            {!s.whole_pc && (
+              <Row wide title="Folders to scan" desc="Everything inside these folders is scanned.">
+                {!s.sources.length && <p className="warn">No folders are chosen, so a scan would find nothing. Add one below or turn on Scan the whole PC.</p>}
+                <PathList bare title="Folders to scan" hint="" items={s.sources} onChange={v => set({ sources: v })} />
+              </Row>
+            )}
+            <Row title="When new files appear" desc="New files can wait for your decision, or be included straight away.">
+              <Select label="When new files appear" value={s.new_files} onChange={v => set({ new_files: v as Settings["new_files"] })} options={[{ value: "review", label: "Hold them for review (recommended)" }, { value: "include", label: "Back them up automatically" }]} />
+            </Row>
+          </Cluster>
+          <Cluster title="How files are copied">
+            <Row title="Compare file contents" desc="On every backup, also check files whose size and date did not change. Slower, but catches an edit that kept both.">
+              <Switch checked={s.deep_check} onChange={v => set({ deep_check: v })} label="Compare file contents on every backup" />
+            </Row>
+            <Row title="Compress backups" desc="Saves space. Each backup run is saved as one archive per drive (in the _archives folder), with your folders kept inside. Restore and Verify still work on single files. RAR is not offered: only WinRAR can create it.">
+              <Select label="Compress backups" value={s.compress} onChange={v => set({ compress: v })} options={s.compress_formats.filter(f => f.available).map(f => ({ value: f.id, label: f.label }))} />
+            </Row>
+          </Cluster>
+        </Group>
+      )}
+
+      {section === "rules" && (
+        <Group title="Rules" lead="What is never backed up." aside={saved}>
+          <Cluster>
+            <Row title="Skip junk" desc="Windows, program files, caches, node_modules, temp files and similar. Recommended.">
+              <Switch checked={s.skip_junk} onChange={v => set({ skip_junk: v })} label="Skip Windows, program files, caches and other junk" />
+            </Row>
+            <Row wide title="Built-in junk rules" desc="The names the switch above skips.">
+              <details><summary className="sub">Show the {s.junk_list.length} built-in rules</summary><p className="sub">{s.junk_list.join(", ")}</p></details>
+            </Row>
+            <Row wide title="Extra names to skip" desc="One per line. Wildcards are allowed. Start with / to match from the top of a drive.">
+              <textarea aria-label="Extra names to skip" rows={5} value={excl} onChange={e => { setExcl(e.target.value); change(s, e.target.value); }} />
+            </Row>
+            <Row title="Largest file to back up" desc="In megabytes. Bigger files are skipped. 0 means no limit.">
+              <NumField label="Largest file in megabytes" value={s.max_size_mb} onCommit={n => set({ max_size_mb: n })} />
+            </Row>
+          </Cluster>
+        </Group>
+      )}
+
+      {section === "schedule" && (
+        <Group title="Schedule" lead="Find new files on its own. Nothing is copied until you click Back up now." aside={saved}>
+          <Cluster title="Daily scan">
+            <Row title="Scan on a schedule" desc="The scan finds new files so they are waiting in New files. The app must be running at that time; if it was off, the scan runs when it starts that day.">
+              <Switch checked={s.schedule.enabled} onChange={v => set({ schedule: { ...s.schedule, enabled: v } })} label="Scan on a schedule" />
+            </Row>
+            <Row off={!s.schedule.enabled} title="At what time">
+              <TimeField label="Scan time" value={s.schedule.time} onChange={v => set({ schedule: { ...s.schedule, time: v } })} />
+            </Row>
+            <Row off={!s.schedule.enabled} wide title="On which days">
+              <div className="days" role="group" aria-label="Days of the week">
+                {days.map((d, i) => <label key={d} className="chip"><input type="checkbox" checked={s.schedule.days.includes(i)} onChange={e => day(i, e.target.checked)} /><span>{d}</span></label>)}
+              </div>
+            </Row>
+          </Cluster>
+          <Cluster title="Keep the list current">
+            <Row title="Re-scan folders every" desc="In minutes, while the app is open. 0 turns it off.">
+              <NumField label="Minutes between scans" value={s.auto_scan_minutes} onCommit={n => set({ auto_scan_minutes: n })} />
+            </Row>
+          </Cluster>
+        </Group>
+      )}
+
+      {section === "alerts" && (
+        <Group title="Alerts" lead="Get a message when a scheduled scan or backup finishes." aside={saved}>
+          <Cluster>
+            <Row wide title="Webhook" desc="Slack, Discord or any service that accepts JSON.">
+              <div className="row">
+                <input aria-label="Webhook URL" value={s.webhook} onChange={e => set({ webhook: e.target.value })} placeholder="https://" />
+                <button onClick={test} disabled={!s.webhook}>Send test message</button>
+              </div>
+            </Row>
+          </Cluster>
+        </Group>
+      )}
+
+      {section === "app" && (
+        <Group title="App" lead="This copy of the app, its version and where it keeps its data." aside={saved}>
+          <Cluster title="Updates">
+            <Row title={`Version ${ver?.current ?? "..."}`} desc={ver?.error ? ver.error : ver?.available ? `Version ${ver.latest} is available.` : ver?.enabled === false ? "Update checks are off." : ver ? "This is the latest version." : "Checking…"}>
+              <button onClick={checkNow} disabled={checking || ver?.enabled === false}>{checking ? "Checking…" : "Check for updates now"}</button>
+            </Row>
+            <Row title="Check for updates when the app opens" desc="Installed app only. Nothing is installed without you clicking Update now.">
+              <Switch checked={s.update_check} onChange={v => set({ update_check: v })} label="Check GitHub for a newer version when the app opens" />
+            </Row>
+          </Cluster>
+          <Cluster title="This installation">
+            <Row wide title="Data folder" desc="Settings, the file list and history live here."><span className="path" title={s.data_dir}><bdi>{s.data_dir}</bdi></span></Row>
+            <Row title="Password" desc={s.auth_required ? "A password is required to open the app." : "Set the BACKUP_PASSWORD environment variable to require one."}>
+              <span className={"tag " + (s.auth_required ? "backed_up" : "")}>{s.auth_required ? "On" : "Off"}</span>
+            </Row>
+          </Cluster>
+        </Group>
+      )}
+    </Panel>
   );
 }

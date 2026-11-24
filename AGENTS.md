@@ -46,9 +46,26 @@ build output, local state, secrets or machine-specific (for example `installer/o
 `.exe` files, caches or credentials. Add the `.gitignore` change in the same push.
 
 ## Other conventions
+- The packaged exe must pass `AlaEhBackup.exe --selftest` (run by `installer/build.ps1`, and by the release workflow on every pull request
+  that touches the app). Keep `--collect-all cryptography` in the PyInstaller command and add every new native or hidden dependency
+  to the self-test in `backend/desktop.py`. A build that fails it must never become an installer.
+- Wireless backup (`backend/pki.py`, `agent.py`, `remote.py`): the agent is READ-ONLY and must stay that way. Keep every path
+  check (`Agent.resolve`, `DENY_NAMES`, the app's own data folder), the LAN-only check, the certificate pinning in
+  `remote._connect`, and `clean_remote_rel` for names that come from another PC. Never add an endpoint that writes,
+  deletes or runs anything. Tests in `backend/tests/test_wireless.py` use real TLS on loopback; bind to `127.0.0.1` in tests
+  (a `0.0.0.0` bind makes Windows show a firewall prompt).
+- Never expose the Flask API on a public deployment: `vercel.json` must not route `/api` to the backend.
+- A backup copy is hashed while it is written (`copy_hashed`), never from a separate earlier read.
+- The installer (`installer/setup.iss`) kills running `AlaEhBackup.exe` copies before replacing the exe and reopens the app
+  when silent. This is what lets old installed versions update, so keep it. `/DExeName` and `/DAppIdGuid` exist to test
+  an install without touching a real one (never test with the real exe name while the user's app is running).
+- Self-update: the installed exe compares its version (stamped by `installer/build.ps1` into the git-ignored
+  `backend/_version.py`) with the latest GitHub release (`backend/updater.py`, `/api/update`). The release must keep the asset
+  name `AlaEhBackup-Setup.exe`. Don't weaken the checks (GitHub-only host, size and SHA-256 verification, POST only,
+  frozen exe only).
 - The packaged app is a native window (pywebview, `backend/desktop.py`) over the local Flask server. Desktop-only
   packages go in `backend/requirements-desktop.txt`, never `requirements.txt` (Vercel installs that one).
-- Dev ports: backend 5000, Vite dev server 5174 (`FRONTEND_PORT` overrides). Keep `app.py`,
+- Dev ports: backend 5001, Vite dev server 5174 (`FRONTEND_PORT` overrides). Keep `app.py`,
   `backend/app.py` and `frontend/vite.config.ts` in sync if you change it.
 - Run `python -m pytest backend/tests -q` before pushing; all tests must pass.
 - Rebuild the installer locally with `powershell -ExecutionPolicy Bypass -File installer\build.ps1`.

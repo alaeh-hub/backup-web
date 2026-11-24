@@ -48,17 +48,18 @@ export function PathPicker({ value, onChange, onUse, useLabel }: { value: string
   );
 }
 
-export function PathList({ title, hint, items, onChange }: { title: string; hint: string; items: string[]; onChange: (v: string[]) => void }) {
+export function PathList({ title, hint, items, onChange, bare }: { title: string; hint: string; items: string[]; onChange: (v: string[]) => void; bare?: boolean }) {
   const [v, setV] = useState("");
+  const Wrap = bare ? "div" : "section";             // bare: the caller already shows the title and the hint
   return (
-    <section className="block">
-      <h2>{title}</h2>
-      <p className="sub">{hint}</p>
-      <ul className="rows">
+    <Wrap className={bare ? "plist" : "block"}>
+      {!bare && <h2>{title}</h2>}
+      {!bare && <p className="sub">{hint}</p>}
+      <ul className="rows" aria-label={title}>
         {items.map(p => <li key={p} className="line"><span className="path" title={p}><bdi>{p}</bdi></span><button type="button" onClick={() => onChange(items.filter(x => x !== p))}>Remove</button></li>)}
         {!items.length && <li className="sub">None yet</li>}
       </ul>
       <PathPicker value={v} onChange={setV} onUse={p => { if (!items.includes(p)) onChange([...items, p]); setV(""); }} />
-    </section>
+    </Wrap>
   );
 }
