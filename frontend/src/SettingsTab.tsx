@@ -38,9 +38,7 @@ export function SettingsTab({ onSaved }: { onSaved: () => void }) {
   };
   const change = (n: Settings, e: string) => { latest.current = { s: n, excl: e }; dirty.current = true; setMsg("Saving..."); window.clearTimeout(timer.current); timer.current = window.setTimeout(send, 500); };
   useEffect(() => () => { window.clearTimeout(timer.current); send(); }, []); // save pending changes when leaving the tab
-  if (loadErr) return <section className="block"><p className="err">Could not load the settings: {loadErr}</p><div><button onClick={() => setAgain(n => n + 1)}>Try again</button></div></section>;
-  if (!s) return <p className="sub">Loading...</p>;
-  const set = (p: Partial<Settings>) => { const n = { ...s, ...p }; setS(n); change(n, excl); };
+  // hooks must run before the early returns below, or React crashes (black screen) when the page finishes loading
   const [ver, setVer] = useState<UpdateInfo | null>(null);
   const [checking, setChecking] = useState(false);
   const checkNow = async () => {
@@ -49,6 +47,9 @@ export function SettingsTab({ onSaved }: { onSaved: () => void }) {
     setChecking(false);
   };
   useEffect(() => { api<UpdateInfo>("/api/update").then(setVer).catch(() => { /* offline */ }); }, []);
+  if (loadErr) return <section className="block"><p className="err">Could not load the settings: {loadErr}</p><div><button onClick={() => setAgain(n => n + 1)}>Try again</button></div></section>;
+  if (!s) return <p className="sub">Loading...</p>;
+  const set = (p: Partial<Settings>) => { const n = { ...s, ...p }; setS(n); change(n, excl); };
   const test = async () => {
     try { await send(); await api("/api/webhook/test", "POST"); setMsg("Test message sent."); }
     catch (e) { setMsg("Error: " + (e as Error).message); }
