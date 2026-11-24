@@ -2,7 +2,7 @@
 
 A local backup tool for Windows PCs (Flask + React + TypeScript). It scans a PC, lets you choose what to
 back up, and copies the chosen files to an external drive. Several PCs can share one drive: each PC gets its
-own folder. Nothing leaves the machine and there is no database; settings and the file list are JSON files
+own folder. Your files never leave your machines (the fonts are bundled, and the only internet request is the optional update check) and there is no database; settings and the file list are JSON files
 in `~/.ala-eh-backup` (change with `BACKUP_DATA_DIR`).
 
 ## Install (Windows)
@@ -65,6 +65,32 @@ Other parts:
 - **Scheduled scan** (Settings) scans on chosen days and times so new files are waiting for review. It never
   copies anything by itself.
 - Optional webhook message (Slack, Discord or any JSON endpoint) after scheduled scans and backups.
+
+## Back up another PC over your network
+
+Two PCs that both run this app can work together. **B** is the PC to protect, **A** has the backup drive. The same app
+does both jobs; nothing special is installed.
+
+1. **On B:** open **Other PCs**, add the folders to share, click **Turn sharing on**, then **Show a pairing code**.
+2. **On A:** open **Other PCs**, click **Find PCs on this network** (or type B's address), enter the 6-digit code and
+   **Pair**. Tick the folders of B to back up.
+3. **Back up as usual** on A: B's files appear in New files / Files, and **Back up now** copies them to A's drive under
+   `<A's folder>/Remote PCs/<B's name (short id)>/<folder>` (the short id keeps two PCs with the same name apart). Verify and Restore work like any other file (restore asks for a folder).
+
+How it stays safe:
+
+- Sharing is **off** until the owner turns it on, **read-only**, and limited to the chosen folders. This app's own data
+  (it holds the private key), `.ssh`, `.gnupg`, `.aws` and similar folders are never served, and cannot be chosen as a shared folder either.
+- Pairing uses a one-time code that works once, for 5 minutes, with 5 tries (SPAKE2: the code is never sent and cannot
+  be guessed offline). Afterwards each PC is recognised by its certificate (mutual TLS); a different certificate is refused
+  before anything is sent. B can **Remove** a PC at any time and it loses access at once.
+- Only addresses on your own network are served. The app does not use UPnP or open router ports.
+- B shows who is connected and a log of every request. Sharing turns itself off after a few hours unless you choose otherwise.
+- File names sent by another PC are checked before they become paths on A's drive.
+
+Needs: both PCs on the same Wi-Fi or network, B on and awake, and this app running on A while it backs up. The first time,
+Windows asks whether to allow the app: allow **private networks** only. `BACKUP_SHARE_HOST` limits sharing to one address.
+Not covered yet: the internet (use a VPN), files other programs keep open, and system folders.
 
 ## Security
 

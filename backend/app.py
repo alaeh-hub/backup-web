@@ -8,12 +8,18 @@ Environment variables (all optional):
   BACKUP_PASSWORD   if set, the web UI asks for this password
   BACKUP_HOST       bind address                                [127.0.0.1]
   BACKUP_PORT       port                                        [5001]
+  BACKUP_SHARE_HOST address 'Share this PC' listens on          [0.0.0.0, the local network only]
 """
+import socket
+from types import SimpleNamespace
 import atexit, csv, fnmatch, gzip, hashlib, hmac, heapq, io, json, os, platform, re, secrets, shutil, string, sys, threading, time, urllib.request, uuid
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 from pathlib import Path
 
+import agent as agent_mod
+import pki
+import remote
 import updater
 from flask import Flask, Response, jsonify, request, send_from_directory
 
@@ -61,6 +67,7 @@ DEFAULTS = {
     "schedule": {"enabled": False, "time": "22:00", "days": [0, 1, 2, 3, 4, 5, 6]},
     "auto_scan_minutes": 0,
     "webhook": "",
+    "remote_sources": [],   # folders of other paired PCs to back up: [{"pc": id, "root": label}]
     "deep_check": False,    # also compare contents of files whose size and date did not change (slower)
     "update_check": True,   # installed app: look for a newer release on GitHub
 }
@@ -507,6 +514,76 @@ def rules():
     return list(SETTINGS["excludes"]) + (JUNK if SETTINGS.get("skip_junk", True) else [])
 
 
+# ---------------------------------------------------------------- other PCs (wireless backup)
+
+AGENT = agent_mod.Agent(lambda: DATA / "agent", lambda: PC["name"], lambda: PC["id"], compile_rules)     # this PC as a shared PC (off by default)
+PEERS = remote.PeerStore(lambda: DATA / "agent" / "peers.json")                                          # the PCs this PC can back up
+
+
+def safe_name(s):
+    return re.sub(r'[<>:"/\\|?*]', "_", str(s)).strip(" .") or "PC"
+
+
+def clean_remote_rel(rel):
+    """A file path sent by another PC, checked before it is ever used to build a path on this PC's drive. Returns the
+    path or None. A PC that is paired but misbehaving must not be able to write outside its own backup folder."""
+    if not isinstance(rel, str) or not rel or len(rel) > 1000 or "\\" in rel or "\x00" in rel:
+        return None
+    for part in rel.split("/"):
+        if (part in ("", ".", "..") or ":" in part or part != part.strip(" ") or part.endswith(".") or any(ord(c) < 32 for c in part)
+                or part.split(".")[0].upper() in RESERVED):
+            return None
+    return rel
+
+
+def peer_tag(peer):
+    """A PC's name plus a short piece of its unique id, so two PCs that share a name can never share a folder or a file id."""
+    return f"{safe_name(peer['name'])} ({safe_name(str(peer['id']))[:6]})"
+
+
+def remote_key(peer, root):
+    """How a folder of another PC is shown in the file list, written like a network path (two separators, the PC, the folder)."""
+    return os.sep * 2 + peer_tag(peer) + os.sep + safe_name(root)
+
+
+def remote_keys():
+    out = []
+    for rs in SETTINGS.get("remote_sources", []):
+        peer = PEERS.get(rs.get("pc", ""))
+        if peer:
+            out.append(remote_key(peer, rs["root"]))
+    return out
+
+
+def all_sources():
+    return list(sources()) + remote_keys()
+
+
+def rclient(pc_id):
+    peer = PEERS.get(pc_id)
+    if not peer:
+        raise RuntimeError("That PC is no longer paired with this one.")
+    return remote.RemoteClient(peer, AGENT.identity(), PEERS)
+
+
+def src_stat(f):
+    r = f.get("remote")
+    if r:
+        size, mtime = rclient(r["pc"]).stat(r["root"], r["rel"])
+        return SimpleNamespace(st_size=size, st_mtime=mtime)
+    return os.stat(f["path"])
+
+
+def src_open(f):
+    r = f.get("remote")
+    return rclient(r["pc"]).open(r["root"], r["rel"]) if r else open(f["path"], "rb")
+
+
+def src_hash(f):
+    r = f.get("remote")           # the other PC reads its own disk: nothing is sent just to be hashed
+    return rclient(r["pc"]).hash(r["root"], r["rel"]) if r else hash_file(f["path"])
+
+
 # ---------------------------------------------------------------- jobs
 
 class Cancelled(Exception):
@@ -592,7 +669,7 @@ def scan_job():
     maxb = int(SETTINGS["max_size_mb"]) * 1048576
     skipdirs = {os.path.normcase(os.path.abspath(d)) for d in SETTINGS["destinations"]}
     srcs = sources()
-    if not srcs:
+    if not srcs and not SETTINGS.get("remote_sources"):
         raise RuntimeError("No folders are set to be scanned. Turn on 'Scan the whole PC' or add a folder in Settings.")
     lab = labels(srcs)
     auto = SETTINGS.get("new_files") == "include"
@@ -658,6 +735,51 @@ def scan_job():
                     count += 1
                     if count % 2000 == 0:
                         job_set(done=count, total=max(expected, count), message=f"Scanned {count:,} files...")
+    scanned = set(srcs)
+    for rs in SETTINGS.get("remote_sources", []):          # folders of other paired PCs, read over the network
+        peer = PEERS.get(rs.get("pc", ""))
+        if not peer:
+            continue
+        rroot = rs["root"]
+        key = remote_key(peer, rroot)
+        rlabel = os.path.join("Remote PCs", peer_tag(peer), safe_name(rroot))
+        rnew, rfailed, refused = {}, [], 0
+        job_set(message=f"Scanning {peer['name']} ({rroot})...")
+        try:
+            for item in rclient(peer["id"]).walk(rroot, rules(), maxb):
+                check_cancel()
+                if item[0] == "!":
+                    rfailed.append(os.path.normcase(key + sep + item[1].replace("/", sep)))
+                    continue
+                rel_s, size, mtime = item
+                if clean_remote_rel(rel_s) is None or not isinstance(size, int) or not isinstance(mtime, (int, float)) or size < 0:
+                    refused += 1                               # not a file name this PC will ever write to
+                    continue
+                rel = rel_s.replace("/", sep)
+                p = key + sep + rel
+                i = fid_of(p)
+                if i in rnew:
+                    continue
+                old = INDEX.get(i)
+                keep = bool(old and old.get("backed"))
+                rnew[i] = {"id": i, "path": p, "src": key, "label": old["label"] if keep else rlabel,
+                           "rel": old["rel"] if keep else rel, "size": size, "mtime": mtime,
+                           "selected": old["selected"] if old else int(auto),
+                           "reviewed": old.get("reviewed", True) if old else auto,
+                           "backed": old.get("backed", {}) if old else {},
+                           "remote": {"pc": peer["id"], "root": rroot, "rel": rel_s}}
+                count += 1
+                if count % 2000 == 0:
+                    job_set(done=count, total=max(expected, count), message=f"Scanned {count:,} files...")
+        except remote.RemoteError as e:
+            log("warn", "scan", f"Could not scan {peer['name']} ({rroot}): {e} Its old list is kept.")
+            keep_src.add(key)
+            continue
+        if refused:
+            log("warn", "scan", f"{peer['name']} ({rroot}) sent {refused} file names that were refused as unsafe.")
+        new.update(rnew)
+        failed.extend(rfailed)
+        scanned.add(key)
     with LOCK:
         for i, f in INDEX.items():
             if i in new:                                   # keep any choice made while the scan was running
@@ -665,7 +787,7 @@ def scan_job():
                 cur["selected"], cur["reviewed"], cur["backed"] = f["selected"], f.get("reviewed", True), f.get("backed", {})
             elif f["src"] in keep_src or any(os.path.normcase(f["path"]).startswith(p + os.sep) for p in failed):
                 new[i] = f                                 # could not be read this time: keep it as it was
-            elif f.get("backed") and f["src"] in srcs:
+            elif f.get("backed") and (f["src"] in scanned or f.get("remote")):
                 GONE[i] = f                                # deleted from the PC, but the backup copy stays restorable
         for i in new:
             GONE.pop(i, None)
@@ -685,20 +807,19 @@ def scan_job():
 def copy_hashed(f, part, gz):
     """Copy the source to `part` and return the SHA-256 of the bytes actually copied. A file that changed while it was
     read is refused, so a half-edited copy is never recorded as backed up."""
-    src = f["path"]
-    before = os.stat(src)
+    before = src_stat(f)
     sha = hashlib.sha256()
-    with open(src, "rb") as s, (gzip.open(part, "wb", compresslevel=6) if gz else open(part, "wb")) as o:
+    with src_open(f) as s, (gzip.open(part, "wb", compresslevel=6) if gz else open(part, "wb")) as o:
         for chunk in iter(lambda: s.read(1 << 20), b""):
             sha.update(chunk)
             o.write(chunk)
-    after = os.stat(src)
+    after = src_stat(f)
     if (after.st_size, after.st_mtime) != (before.st_size, before.st_mtime) or (before.st_size, before.st_mtime) != (f["size"], f["mtime"]):
         raise RuntimeError("the file changed while it was being backed up; it will be tried again on the next backup")
-    if gz:
+    if gz or f.get("remote"):
         os.utime(part, (time.time(), f["mtime"]))
     else:
-        shutil.copystat(src, part)
+        shutil.copystat(f["path"], part)
     return sha.hexdigest()
 
 
@@ -740,8 +861,8 @@ def deep_changed(ds, already):
     for n, f in enumerate(cand, 1):
         check_cancel()
         try:
-            h = hash_file(f["path"])
-        except OSError:
+            h = src_hash(f)
+        except (OSError, remote.RemoteError, RuntimeError):
             continue
         if any(f["backed"][d].get("hash") != h for d in ds):
             out.append(f)
@@ -799,11 +920,11 @@ def backup_job(trigger="manual", scan_first=False):
     for n, f in enumerate(todo, 1):
         check_cancel()
         try:
-            st = os.stat(f["path"])
+            st = src_stat(f)
             with LOCK:
                 f["size"], f["mtime"] = st.st_size, st.st_mtime
                 mark()
-            h = hash_file(f["path"])
+            h = src_hash(f)
             did = bad = False
             for d in ds:
                 b = f["backed"].get(d)
@@ -909,6 +1030,8 @@ def restore_job(items, target, overwrite):
             src, gz = find_backup(d, f)
             if not src or not src.exists():
                 raise RuntimeError("backup copy not found")
+            if f.get("remote") and not target:
+                raise RuntimeError("Choose a folder to restore into: this file came from another PC.")
             out = Path(target) / f["label"] / f["rel"] if target else Path(f["path"])
             if out.exists() and not overwrite:
                 skipped += 1
@@ -982,10 +1105,16 @@ def organize_job(scope, target):
     tnorm = os.path.normcase(os.path.abspath(target))
     allowed = {e: c for e, c in EXT_CAT.items() if not (scope == "pc" and c == "Code")}
     todo, ignored = [], 0
+    mf = DATA / "organized-index.json"
+    try:
+        manifest = json.loads(mf.read_text("utf8"))
+    except (OSError, ValueError):
+        manifest = {}
+    made = {os.path.normcase(os.path.abspath(k)) for k in manifest}
     for root in organize_roots(scope):
         rnorm = os.path.normcase(os.path.abspath(root))
-        if rnorm == tnorm or rnorm.startswith(tnorm.rstrip(os.sep) + os.sep):
-            continue                      # the target is (inside) a scanned folder: its own output is not new input
+        if rnorm == tnorm:
+            continue                      # the target is itself a scanned folder: its own output is not new input
         for dp, dirs, names in os.walk(root):
             check_cancel()
             dirs[:] = [d for d in dirs if d.lower() not in SKIP_DIRS and not d.startswith(("$", "."))
@@ -996,6 +1125,8 @@ def organize_job(scope, target):
                     ignored += 1
                     continue
                 p = os.path.join(dp, n)
+                if os.path.normcase(os.path.abspath(p)) in made:
+                    continue                  # a file this tool created in an earlier run: output, not input
                 try:
                     st = os.stat(p)
                 except OSError:
@@ -1006,11 +1137,6 @@ def organize_job(scope, target):
     u = disk(target)
     if u and total > u["free"]:
         raise RuntimeError(f"Not enough space in {target}: needs up to {fmt(total)}, only {fmt(u['free'])} free")
-    mf = DATA / "organized-index.json"
-    try:
-        manifest = json.loads(mf.read_text("utf8"))
-    except (OSError, ValueError):
-        manifest = {}
     job_set(total=total, done=0, message=f"Organizing {len(todo)} files ({fmt(total)})...")
     copied = same = failed = done_b = 0
     try:
@@ -1537,7 +1663,7 @@ def _explore(path):
         a["review"] += 0 if f.get("reviewed", True) else 1
     parent = None
     if path:
-        src = next((x for x in sources() if path.lower().startswith(x.lower().rstrip("\\/"))), "")
+        src = next((x for x in all_sources() if path.lower().startswith(x.lower().rstrip("\\/"))), "")
         parent = str(Path(path).parent) if os.path.normcase(path.rstrip("\\/")) != os.path.normcase(src.rstrip("\\/")) else ""
         if parent == path:
             parent = ""
@@ -1601,7 +1727,7 @@ def _collapsed(pred):
             out.append({"kind": "file", "path": f["path"], "name": os.path.basename(f["path"]), "id": f["id"],
                         "files": 1, "bytes": f["size"], "parent": d})
 
-    for src in sources():
+    for src in all_sources():
         visit(src, True)
     out.sort(key=lambda x: -x["bytes"])
     return dict(items=out[:1000], count=len(out), files=sum(i["files"] for i in out),
@@ -1825,7 +1951,152 @@ def stats():
                           **(disk(d) or {"free": None, "total": None})} for d in ds]
     r["last_backup"] = META.get("last_backup")
     r["next_run"] = next_run()
+    r["sharing"] = bool(AGENT.server)
+    r["sharing_connected"] = len(AGENT.status()["connected"]) if AGENT.server else 0
     return jsonify(r)
+
+
+# ---------------------------------------------------------------- other PCs: API
+
+def bad(msg, code=400):
+    return jsonify(error=str(msg)), code
+
+
+@app.get("/api/agent")
+def agent_status():
+    return jsonify(AGENT.status())
+
+
+@app.post("/api/agent/start")
+def agent_start():
+    try:
+        st = AGENT.start(host=os.environ.get("BACKUP_SHARE_HOST") or "0.0.0.0")      # BACKUP_SHARE_HOST: bind to one address only
+    except Exception as e:
+        return bad(e)
+    log("info", "wireless", f"Sharing turned on (port {st['port']})")
+    return jsonify(st)
+
+
+@app.post("/api/agent/stop")
+def agent_stop():
+    st = AGENT.stop()
+    log("info", "wireless", "Sharing turned off")
+    return jsonify(st)
+
+
+@app.post("/api/agent/roots")
+def agent_roots():
+    try:
+        AGENT.set_roots((request.json or {}).get("roots") or [])
+    except (ValueError, TypeError) as e:
+        return bad(e)
+    return jsonify(AGENT.status())
+
+
+@app.post("/api/agent/settings")
+def agent_settings():
+    try:
+        AGENT.set_auto_off((request.json or {}).get("auto_off_hours", 8))
+    except (ValueError, TypeError) as e:
+        return bad(e)
+    return jsonify(AGENT.status())
+
+
+@app.post("/api/agent/pairing")
+def agent_pairing():
+    try:
+        AGENT.new_pairing()
+    except RuntimeError as e:
+        return bad(e)
+    return jsonify(AGENT.status())
+
+
+@app.post("/api/agent/revoke")
+def agent_revoke():
+    AGENT.revoke(str((request.json or {}).get("id") or ""))
+    log("info", "wireless", "A paired PC was removed from this PC's list")
+    return jsonify(AGENT.status())
+
+
+def peer_view(p):
+    chosen = [rs["root"] for rs in SETTINGS.get("remote_sources", []) if rs.get("pc") == p["id"]]
+    return {"id": p["id"], "name": p["name"], "host": p["host"], "port": p["port"], "fingerprint": p["fp"][:16],
+            "added": p.get("added", ""), "last_seen": p.get("last_seen", ""), "roots": chosen}
+
+
+@app.get("/api/peers")
+def peers_list():
+    return jsonify([peer_view(p) for p in PEERS.all()])
+
+
+@app.post("/api/peers/discover")
+def peers_discover():
+    paired = {p["id"] for p in PEERS.all()}
+    return jsonify([{**f, "paired": f["id"] in paired} for f in remote.discover(2.0) if f["id"] != PC["id"]])
+
+
+@app.post("/api/peers/pair")
+def peers_pair():
+    b = request.json or {}
+    host, code = str(b.get("host") or "").strip(), b.get("code")
+    try:
+        port = int(b.get("port") or agent_mod.BASE_PORT)
+        ip = socket.gethostbyname(host)
+    except (ValueError, OSError):
+        return bad("Cannot find that address. Type the PC's IP address, for example 192.168.1.40.")
+    if not agent_mod.is_lan(ip):
+        return bad("Only PCs on your own network can be paired.")
+    try:
+        peer = remote.pair(ip, port, code, PC["name"], AGENT.identity())
+    except remote.RemoteError as e:
+        return bad(e, 403)
+    except Exception as e:
+        return bad(f"Pairing failed ({e.__class__.__name__}).", 502)
+    if peer["id"] == PC["id"]:
+        return bad("That is this PC.")
+    known = PEERS.get(peer["id"])
+    if known and known["fp"] != peer["fp"]:
+        return bad("A PC with that id is already paired under a different identity. Forget it first if it was reinstalled.", 409)
+    PEERS.add(peer)
+    log("info", "wireless", f"Paired with {peer['name']}")
+    return jsonify(peer_view(peer))
+
+
+@app.post("/api/peers/<pid>/forget")
+def peers_forget(pid):
+    PEERS.remove(pid)
+    SETTINGS["remote_sources"] = [rs for rs in SETTINGS.get("remote_sources", []) if rs.get("pc") != pid]
+    write_json("settings.json", SETTINGS)
+    with LOCK:
+        mark()
+    log("info", "wireless", "A PC was forgotten")
+    return jsonify(ok=True)
+
+
+@app.get("/api/peers/<pid>/roots")
+def peers_roots(pid):
+    if not PEERS.get(pid):
+        return bad("Unknown PC", 404)
+    try:
+        hello = rclient(pid).hello()
+    except remote.RemoteError as e:
+        return bad(e, 502)
+    chosen = [rs["root"] for rs in SETTINGS.get("remote_sources", []) if rs.get("pc") == pid]
+    return jsonify(online=True, name=hello.get("name"), roots=[{"label": r, "chosen": r in chosen} for r in hello.get("roots", [])])
+
+
+@app.post("/api/peers/<pid>/sources")
+def peers_sources(pid):
+    if not PEERS.get(pid):
+        return bad("Unknown PC", 404)
+    roots = [str(r) for r in (request.json or {}).get("roots", [])]
+    keep = [rs for rs in SETTINGS.get("remote_sources", []) if rs.get("pc") != pid]
+    SETTINGS["remote_sources"] = keep + [{"pc": pid, "root": r} for r in dict.fromkeys(roots)]
+    write_json("settings.json", SETTINGS)
+    with LOCK:
+        mark()
+    log("info", "wireless", f"Folders to back up from {PEERS.get(pid)['name']}: {', '.join(roots) or 'none'}")
+    return jsonify(peer_view(PEERS.get(pid)))
 
 
 @app.get("/api/logs")

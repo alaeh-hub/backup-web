@@ -11,7 +11,7 @@
   --color-ink: oklch(98% 0 0); --color-ink-2: oklch(84% 0 0); --color-muted: oklch(68% 0 0);
   --color-rule: oklch(22% 0 0);
   --color-accent: oklch(87.5% 0.18 98); --color-accent-ink: oklch(21% 0.04 90); --color-focus: oklch(87.5% 0.18 98);
-  --font-display: "Bricolage Grotesque", "Arial Black", sans-serif; --font-body: "Hanken Grotesk", system-ui, sans-serif; --font-outlier: var(--font-body);
+  --font-display: "Bricolage Grotesque Variable", "Bricolage Grotesque", "Arial Black", sans-serif; --font-body: "Hanken Grotesk Variable", "Hanken Grotesk", system-ui, sans-serif; --font-outlier: var(--font-body);
   --radius-card: 0; --radius-ctl: 0; --radius-pill: 0; --rule-hair: 1px; --shadow-card: none;
   --tracking-display: -0.02em;
 }

@@ -18,6 +18,7 @@ export interface Dest { path: string; label?: string; pc_folder?: string; free: 
 export interface Stats {
   files: number; total_bytes: number; selected_files: number; selected_bytes: number; pending_files: number; pending_bytes: number;
   backed_files: number; backed_bytes: number; new_files: number; review_files: number; review_bytes: number; skipped_files: number; skipped_bytes: number; pc_name: string; last_backup: string | null; next_run: string | null;
+  sharing?: boolean; sharing_connected?: number;
   history: { day: string; bytes: number }[]; largest_files: { path: string; size: number }[];
   largest_folders: { name: string; size: number }[]; destinations: Dest[];
 }
