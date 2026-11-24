@@ -57,7 +57,8 @@ export default function App() {
   const prev = useRef<Job["state"]>("idle");
   const logo = useRef<HTMLImageElement>(null);
 
-  const checkAuth = useCallback(() => api<{ required: boolean; authed: boolean }>("/api/auth/status").then(a => setAuth(a.authed ? "ok" : "login")).catch(() => setAuth("error")), []);
+  const [appVersion, setAppVersion] = useState("");
+  const checkAuth = useCallback(() => api<{ required: boolean; authed: boolean; version?: string }>("/api/auth/status").then(a => { setAppVersion(a.version ?? ""); setAuth(a.authed ? "ok" : "login"); }).catch(() => setAuth("error")), []);
   useEffect(() => { checkAuth(); const f = () => setAuth("login"); window.addEventListener("unauth", f); return () => window.removeEventListener("unauth", f); }, [checkAuth]);
 
   const loadStats = useCallback(async () => { try { setStats(await api<Stats>("/api/stats")); } catch { /* the login screen handles 401 */ } }, []);
@@ -154,6 +155,7 @@ export default function App() {
               </>
             ) : <span className="sub">No backup drive set</span>}
             <span className="sub">Last backup: {stats?.last_backup ?? "never"}</span>
+            {appVersion && <span className="sub">Version {appVersion}</span>}
           </div>
         </aside>
 
