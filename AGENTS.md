@@ -27,11 +27,10 @@ When bumping:
 1. Pick the next version `X.Y.Z`.
 2. Update `"version"` in `frontend/package.json`.
 3. Update the fallback `#define AppVersion` in `installer/setup.iss` and the `-Version` default in `installer/build.ps1`.
-4. Only after the PR is merged into `main` (and only if the user asks you to release), switch to the
-   updated `main` and create and push the tag:
-   `git tag vX.Y.Z && git push origin vX.Y.Z`
-   The tag triggers `.github/workflows/release.yml`, which builds `AlaEhBackup.exe` and
-   `AlaEhBackup-Setup.exe` and publishes them as a GitHub Release. The site's Install button downloads
+4. Do NOT tag by hand. When the PR is merged into `main`, `.github/workflows/release.yml` reads the version
+   from `frontend/package.json`; if no release for it exists yet, it builds `AlaEhBackup.exe` and
+   `AlaEhBackup-Setup.exe`, creates the tag `vX.Y.Z` and publishes the GitHub Release. If you forgot to bump the
+   version, nothing is released. The site's Install button downloads
    `releases/latest/download/AlaEhBackup-Setup.exe`, so the file name must not change.
 5. Mention the new version in your final message to the user.
 
