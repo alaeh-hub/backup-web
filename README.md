@@ -83,13 +83,11 @@ in `backend/requirements-desktop.txt`) and writes `installer/out/AlaEhBackup-Set
 ### Releasing
 
 Work on a branch and open a pull request; do not push to `main` directly. Bump the version in
-`frontend/package.json`, `installer/setup.iss` and `installer/build.ps1`. After the PR is merged, tag it:
-
-    git tag vX.Y.Z
-    git push origin vX.Y.Z
-
-`.github/workflows/release.yml` then builds the installer on Windows and publishes `AlaEhBackup-Setup.exe` and
-`AlaEhBackup.exe` as a GitHub Release. See `AGENTS.md` for the rules AI assistants follow in this repo.
+`frontend/package.json`, `installer/setup.iss` and `installer/build.ps1`. When the PR is merged,
+`.github/workflows/release.yml` reads the version from `frontend/package.json`. If there is no release for it yet,
+it builds the installer on Windows, tags `vX.Y.Z` and publishes `AlaEhBackup-Setup.exe` and `AlaEhBackup.exe` as a
+GitHub Release. If the version was not bumped, nothing is released. You can also run it by hand from the Actions
+tab to get the files as a downloadable artifact. See `AGENTS.md` for the rules AI assistants follow in this repo.
 
 ### Continuous integration
 
