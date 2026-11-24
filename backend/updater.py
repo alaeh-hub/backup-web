@@ -1,5 +1,5 @@
 """Self-update for the installed Windows app: asks GitHub for the latest release and can run its installer."""
-import hashlib, json, os, re, subprocess, sys, tempfile, urllib.request
+import hashlib, json, os, re, shutil, subprocess, sys, tempfile, urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -60,6 +60,8 @@ def download(release, opener=urllib.request.urlopen):
     """Save the installer to a temp folder and check it is the file GitHub announced. Returns its path."""
     if not release.get("url"):
         raise RuntimeError("This release has no installer attached.")
+    for old in Path(tempfile.gettempdir()).glob("ala-eh-update-*"):       # leftovers of earlier updates
+        shutil.rmtree(old, ignore_errors=True)
     folder = Path(tempfile.mkdtemp(prefix="ala-eh-update-"))
     path = folder / ASSET
     req = urllib.request.Request(release["url"], headers={"User-Agent": "ala-eh-backup-updater"})
@@ -79,7 +81,11 @@ def download(release, opener=urllib.request.urlopen):
 
 
 def run_installer(path):
-    """Start the installer silently and detached; it closes this app, replaces the exe and reopens it."""
-    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    subprocess.Popen([str(path), "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"],
-                     creationflags=flags, close_fds=True)
+    """Hand over to a detached helper: it waits for this app to answer the browser, kills every AlaEhBackup.exe
+    (the PyInstaller exe is a wrapper plus the app, and a leftover wrapper would lock the file the installer
+    replaces), then runs the installer silently. The installer reopens the app when it is done."""
+    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    exe = Path(sys.executable).name if getattr(sys, "frozen", False) else "AlaEhBackup.exe"
+    steps = (f'ping -n 4 127.0.0.1 >nul & taskkill /F /T /IM "{exe}" >nul 2>&1 & ping -n 3 127.0.0.1 >nul & '
+             f'"{path}" /SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS')
+    subprocess.Popen(f'cmd.exe /d /s /c "{steps}"', creationflags=flags, close_fds=True)

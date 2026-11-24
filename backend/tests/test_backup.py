@@ -293,7 +293,7 @@ def test_update_status_and_install_guard(rig, monkeypatch):
     assert rig.get("/api/update?force=1").json["enabled"] is False
 
 
-def test_update_download_checks_integrity(tmp_path):
+def test_update_download_checks_integrity(tmp_path, monkeypatch):
     import hashlib, io, updater
 
     class Resp(io.BytesIO):
@@ -302,6 +302,7 @@ def test_update_download_checks_integrity(tmp_path):
         def __enter__(self): return self
         def __exit__(self, *a): return False
 
+    monkeypatch.setattr(updater.tempfile, "gettempdir", lambda: str(tmp_path))      # never touch the real temp folder
     data = b"installer-bytes"
     ok = {"url": "https://github.com/a/b/releases/download/v1/AlaEhBackup-Setup.exe", "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
     path = updater.download(ok, opener=lambda req, timeout: Resp(data, ok["url"]))
@@ -311,3 +312,13 @@ def test_update_download_checks_integrity(tmp_path):
             updater.download(bad, opener=lambda req, timeout: Resp(data, ok["url"]))
     with pytest.raises(RuntimeError):                                    # redirected off GitHub
         updater.download(ok, opener=lambda req, timeout: Resp(data, "https://evil.example/x"))
+
+
+def test_update_installer_kills_leftover_wrapper_first(monkeypatch):
+    import updater
+    seen = {}
+    monkeypatch.setattr(updater.subprocess, "Popen", lambda cmd, **kw: seen.update(cmd=cmd))
+    updater.run_installer(r"C:	mp\AlaEhBackup-Setup.exe")
+    cmd = seen["cmd"]
+    assert "taskkill /F /T /IM" in cmd and cmd.index("taskkill") < cmd.index("AlaEhBackup-Setup.exe")
+    assert "/SILENT" in cmd
