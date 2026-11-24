@@ -77,6 +77,7 @@ export function SettingsTab({ onSaved }: { onSaved: () => void }) {
         <div className="fields">
           <label>Skip files larger than (MB, 0 for no limit)<NumField value={s.max_size_mb} onCommit={n => set({ max_size_mb: n })} /></label>
         </div>
+        <label className="check"><input type="checkbox" checked={s.deep_check} onChange={e => set({ deep_check: e.target.checked })} /> Also compare file contents on every backup (slower; catches an edit that kept the same size and date)</label>
         <label className="check"><input type="checkbox" checked={s.compress} onChange={e => set({ compress: e.target.checked })} /> Compress backups (saves space, files are stored as .gz)</label>
       </section>
       <section className="block">

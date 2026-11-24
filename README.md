@@ -21,8 +21,10 @@ Closing the window stops the app, and scheduled scans only run while it is open.
   app when it finishes. The installed app uses port 5100 (so it never clashes with a dev copy on 5001) and has its own
   Ala Eh logo (`installer/app.ico`) in the window, taskbar and exe.
 - The installer is not code-signed, so Windows SmartScreen may warn: choose **More info**, then **Run anyway**.
-- The app always runs on the PC it backs up. A deployed site (for example Vercel) shows only the download page,
-  because a server cannot see your files. On `localhost`/`127.0.0.1` (dev server or the installed app) you get the full app; add `?download` to the address (`http://127.0.0.1:5174/?download`) to preview the download page.
+- The app always runs on the PC it backs up. The Vercel deployment contains only the download page (`vercel.json` has just the
+  frontend service, no `/api` route), and the backend also refuses every `/api` call there unless `BACKUP_PASSWORD` is set. A deployed site (for example Vercel) shows only the download page,
+  because a server cannot see your files. Addresses on your own network (`192.168.x.x`, `10.x.x.x`, a PC name) get the
+  full app, so `BACKUP_HOST` access from a phone or laptop works. On `localhost`/`127.0.0.1` (dev server or the installed app) you get the full app; add `?download` to the address (`http://127.0.0.1:5174/?download`) to preview the download page.
 
 ## Run from source (development)
 
@@ -58,6 +60,8 @@ Other parts:
   again if Windows gives it another letter.
 - **Restore** puts files back in their original place or another folder, including files deleted from the PC.
 - **Verify** re-checks backed up copies. **Organize** gathers documents, pictures and videos into one sorted folder.
+- **Compare file contents** (Settings): normally a file counts as unchanged when its size and date match. Turn this on to also
+  hash such files on every backup and catch an edit that kept the same size and date (slower).
 - **Scheduled scan** (Settings) scans on chosen days and times so new files are waiting for review. It never
   copies anything by itself.
 - Optional webhook message (Slack, Discord or any JSON endpoint) after scheduled scans and backups.

@@ -78,6 +78,8 @@ def download(release, opener=urllib.request.urlopen):
         raise RuntimeError("This release has no installer attached.")
     for old in Path(tempfile.gettempdir()).glob("ala-eh-update-*"):       # leftovers of earlier updates
         shutil.rmtree(old, ignore_errors=True)
+    if not release.get("size") or not release.get("sha256"):
+        raise RuntimeError("This release has no size or SHA-256 checksum to verify, so it was not installed.")
     folder = Path(tempfile.mkdtemp(prefix="ala-eh-update-"))
     path = folder / ASSET
     req = urllib.request.Request(release["url"], headers={"User-Agent": "ala-eh-backup-updater"})
