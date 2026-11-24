@@ -322,3 +322,39 @@ def test_update_installer_kills_leftover_wrapper_first(monkeypatch):
     cmd = seen["cmd"]
     assert "taskkill /F /T /IM" in cmd and cmd.index("taskkill") < cmd.index("AlaEhBackup-Setup.exe")
     assert "/SILENT" in cmd
+
+
+def test_update_picks_highest_version_not_latest_published():
+    import io, json, updater
+
+    def rel(tag, **kw):
+        base = {"tag_name": tag, "draft": False, "prerelease": False, "html_url": f"https://github.com/alaeh-hub/backup-web/releases/tag/{tag}", "body": "",
+                "assets": [{"name": updater.ASSET, "size": 5, "browser_download_url": f"https://github.com/x/y/releases/download/{tag}/{updater.ASSET}"}]}
+        return {**base, **kw}
+
+    # newest-published first (as GitHub lists them), but 1.2.4 is the highest installable version
+    releases = [rel("v1.2.3"), rel("v9.9.9", draft=True), rel("v8.0.0", prerelease=True), rel("v7.0.0", assets=[]), rel("v1.2.10"), rel("v1.2.4")]
+    opener = lambda req, timeout: io.BytesIO(json.dumps(releases).encode())
+    assert updater.fetch_latest(opener)["version"] == "1.2.10"            # numeric compare: 10 > 4 > 3
+    assert updater.fetch_latest(lambda r, timeout: io.BytesIO(json.dumps(releases[:1] + releases[-1:]).encode()))["version"] == "1.2.4"
+    with pytest.raises(RuntimeError):
+        updater.fetch_latest(lambda r, timeout: io.BytesIO(b"[]"))
+
+
+def test_current_version_ignores_stale_stamp_when_running_from_source(monkeypatch):
+    import sys, updater
+    from pathlib import Path
+    stamp = Path(updater.__file__).parent / "_version.py"
+    existed = stamp.exists()
+    old = stamp.read_text() if existed else None
+    stamp.write_text('VERSION = "0.0.1-stale"\n')
+    try:
+        monkeypatch.delattr(sys, "frozen", raising=False)
+        assert updater.current_version() != "0.0.1-stale"
+    finally:
+        stamp.write_text(old) if existed else stamp.unlink()
+
+
+def test_status_reports_version_for_the_desktop_launcher(rig):
+    import updater
+    assert rig.get("/api/auth/status").json["version"] == updater.current_version()

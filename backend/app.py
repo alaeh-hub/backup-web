@@ -1111,7 +1111,8 @@ def guard():
 
 @app.get("/api/auth/status")
 def auth_status():
-    return jsonify(required=bool(PASSWORD), authed=(not PASSWORD) or request.cookies.get("abt") in TOKENS)
+    return jsonify(required=bool(PASSWORD), authed=(not PASSWORD) or request.cookies.get("abt") in TOKENS,
+                   version=updater.current_version())      # the desktop launcher uses this to tell copies apart
 
 
 @app.post("/api/auth/login")
@@ -1194,6 +1195,17 @@ def set_settings():
     return get_settings()
 
 
+EXIT_HOOK = None          # set by backend/desktop.py: closes the native window so the whole exe exits normally
+
+
+def close_app():
+    try:
+        if EXIT_HOOK:
+            EXIT_HOOK()
+    finally:
+        threading.Timer(4, lambda: os._exit(0)).start()      # if the window did not close in time, stop anyway
+
+
 UPDATE = {"at": 0.0, "release": None, "error": ""}
 
 
@@ -1237,7 +1249,7 @@ def update_install():
         return jsonify(error=str(e)), 502
     log("info", "update", f"Updating {st['current']} -> {st['latest']}")
     updater.run_installer(path)
-    threading.Timer(1.5, lambda: os._exit(0)).start()       # let the installer replace the exe; it reopens the app
+    threading.Timer(1.5, close_app).start()      # the installer helper (started above) finishes the job and reopens the app
     return jsonify(ok=True, version=st["latest"])
 
 

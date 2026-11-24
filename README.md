@@ -16,7 +16,10 @@ Closing the window stops the app, and scheduled scans only run while it is open.
   **Update now**: the app downloads the installer (only from GitHub, checked against its size and SHA-256), installs
   it silently and reopens by itself. Nothing is installed without that click. Turn the check off in Settings, under
   Updates, or with no internet it is simply skipped. You can also run a newer installer over the old one by hand.
-  Settings and history are kept in `~/.ala-eh-backup`. Versions older than 1.2.0 cannot update themselves: reinstall once.
+  Settings and history are kept in `~/.ala-eh-backup`. It always goes to the highest released version, even if you
+  skipped some. The installer closes any copy still running (including leftover background processes) and reopens the
+  app when it finishes. The installed app uses port 5100 (so it never clashes with a dev copy on 5001) and has its own
+  Ala Eh logo (`installer/app.ico`) in the window, taskbar and exe.
 - The installer is not code-signed, so Windows SmartScreen may warn: choose **More info**, then **Run anyway**.
 - The app always runs on the PC it backs up. A deployed site (for example Vercel) shows only the download page,
   because a server cannot see your files. On `localhost`/`127.0.0.1` (dev server or the installed app) you get the full app; add `?download` to the address (`http://127.0.0.1:5174/?download`) to preview the download page.

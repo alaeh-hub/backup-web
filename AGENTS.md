@@ -46,6 +46,9 @@ build output, local state, secrets or machine-specific (for example `installer/o
 `.exe` files, caches or credentials. Add the `.gitignore` change in the same push.
 
 ## Other conventions
+- The installer (`installer/setup.iss`) kills running `AlaEhBackup.exe` copies before replacing the exe and reopens the app
+  when silent. This is what lets old installed versions update, so keep it. `/DExeName` and `/DAppIdGuid` exist to test
+  an install without touching a real one (never test with the real exe name while the user's app is running).
 - Self-update: the installed exe compares its version (stamped by `installer/build.ps1` into the git-ignored
   `backend/_version.py`) with the latest GitHub release (`backend/updater.py`, `/api/update`). The release must keep the asset
   name `AlaEhBackup-Setup.exe`. Don't weaken the checks (GitHub-only host, size and SHA-256 verification, POST only,
