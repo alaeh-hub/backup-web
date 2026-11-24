@@ -5,6 +5,30 @@ from pathlib import Path
 if sys.stdout is None or sys.stderr is None:      # windowed build has no console: keep print/logging from crashing
     sys.stdout = sys.stderr = open(os.devnull, "w")
 
+if "--selftest" in sys.argv:
+    # `AlaEhBackup.exe --selftest <result file>`: load every part of the packaged app (the crypto library, the sharing code,
+    # the window) and exit, so a build that is missing a piece is caught when it is built, not on a user's PC.
+    import traceback
+    _out = sys.argv[sys.argv.index("--selftest") + 1]
+    try:
+        import tempfile
+        _tmp = tempfile.mkdtemp(prefix="aeb-selftest-")
+        os.environ["BACKUP_DATA_DIR"] = _tmp
+        import webview, app as _app, agent, remote, pki, updater          # noqa: F401
+        from spake2 import SPAKE2_A, SPAKE2_B
+        _ident = pki.Identity(os.path.join(_tmp, "agent"))
+        pki.server_context(_ident, "")
+        pki.client_context(_ident)
+        _a, _b = SPAKE2_A(b"123456"), SPAKE2_B(b"123456")
+        _ma, _mb = _a.start(), _b.start()
+        assert _a.finish(_mb) == _b.finish(_ma)
+        _msg = "ok"
+    except BaseException:
+        _msg = traceback.format_exc()
+    with open(_out, "w", encoding="utf8") as _f:
+        _f.write(_msg)
+    os._exit(0 if _msg == "ok" else 1)
+
 import webview
 from werkzeug.serving import make_server
 
