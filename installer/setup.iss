@@ -1,6 +1,6 @@
 ; Inno Setup script: installs AlaEhBackup.exe per-user (no admin rights needed).
 #ifndef AppVersion
-  #define AppVersion "1.2.0"
+  #define AppVersion "1.2.1"
 #endif
 
 [Setup]
