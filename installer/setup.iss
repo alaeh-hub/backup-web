@@ -1,8 +1,12 @@
 ; Inno Setup script: installs AlaEhBackup.exe per-user (no admin rights needed).
+#ifndef AppVersion
+  #define AppVersion "1.1.0"
+#endif
+
 [Setup]
 AppId={{6F0B7C0E-3D1A-4C6B-9A55-0A1AE4BACC01}
 AppName=Ala Eh! File Backup
-AppVersion=1.0.0
+AppVersion={#AppVersion}
 AppPublisher=Ala Eh
 DefaultDirName={autopf}\Ala Eh File Backup
 DefaultGroupName=Ala Eh File Backup
