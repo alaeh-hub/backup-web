@@ -25,6 +25,10 @@ const tabs: { key: Tab; label: string; icon: string; title: string; hint: string
   { key: "logs", label: "Logs", icon: "log", title: "Logs", hint: "Everything the tool has done, newest first." },
   { key: "settings", label: "Settings", icon: "settings", title: "Settings", hint: "Backup drives, rules, schedule and notifications." },
 ];
+/** Where the Windows installer is published (GitHub Releases: attach AlaEhBackup-Setup.exe to the latest release). */
+const INSTALLER_URL = "https://github.com/alaeh-hub/backup-web/releases/latest/download/AlaEhBackup-Setup.exe";
+/** The installer is only offered on the hosted site; the installed app already runs on this PC. */
+const HOSTED = !["localhost", "127.0.0.1", "::1", "[::1]"].includes(location.hostname);
 const idle: Job = { state: "idle", type: "", message: "", done: 0, total: 0 };
 
 function Login({ onOk }: { onOk: () => void }) {
@@ -159,6 +163,7 @@ export default function App() {
               </AnimatePresence>
             </div>
             <div className="head-actions">
+              {HOSTED && <a className="btn" href={INSTALLER_URL} download title="Install the Windows app so it can back up this PC"><Icon name="download" /><span>Install<span className="hide-sm"> for Windows</span></span></a>}
               {busy && <button onClick={() => api("/api/job/cancel", "POST").catch(e => setMsg("Error: " + (e as Error).message))}><Icon name="cancel" /><span className="hide-sm">Cancel</span></button>}
               <button aria-label="Scan files" onClick={() => start("/api/scan")} disabled={busy}><Icon name="scan" /><span className="hide-sm">Scan files</span></button>
               <button className="primary" onClick={() => start("/api/backup")} disabled={busy || !stats?.files}><Icon name="backup" />Back up<span className="hide-sm"> now{stats?.pending_bytes ? ` (${fmt(stats.pending_bytes)})` : ""}</span></button>

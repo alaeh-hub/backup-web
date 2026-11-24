@@ -317,7 +317,7 @@ summary:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2
   .head { padding-block: var(--space-sm); min-height: 0; }
   .head-title { flex: 1 1 100%; margin-right: 0; }
   .head-actions { width: 100%; justify-content: stretch; }
-  .head-actions button { flex: 1 1 auto; }
+  .head-actions button, .head-actions .btn { flex: 1 1 auto; }
   .head::after { bottom: 0; }
 }
 @container (max-width: 40rem) {
@@ -349,7 +349,7 @@ summary:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2
   .head-title p:not(.head-job) { display: none; }
   .head-title p { font-size: var(--text-xs); margin-top: 0; }
   .head-actions { width: auto; flex: none; flex-wrap: nowrap; }
-  .head-actions button { flex: none; min-height: 40px; padding: 0 var(--space-sm); }
+  .head-actions button, .head-actions .btn { flex: none; min-height: 40px; padding: 0 var(--space-sm); }
   .content { padding: var(--space-sm) var(--space-md) var(--space-xl); gap: var(--space-sm); }
 }
 @container (max-width: 40rem) {
