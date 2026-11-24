@@ -8,12 +8,13 @@ import { Restore } from "./Restore";
 import { Devices } from "./Devices";
 import { Organize } from "./Organize";
 import { Logs } from "./Logs";
+import { Network } from "./Network";
 import { SettingsTab } from "./SettingsTab";
 import { Icon, Page, reduced } from "./ui";
 import { DialogHost } from "./Dialog";
 import { animate } from "animejs";
 
-type Tab = "dashboard" | "review" | "selected" | "files" | "restore" | "devices" | "organize" | "logs" | "settings";
+type Tab = "dashboard" | "review" | "selected" | "files" | "restore" | "devices" | "organize" | "logs" | "settings" | "network";
 const tabs: { key: Tab; label: string; icon: string; title: string; hint: string }[] = [
   { key: "dashboard", label: "Overview", icon: "overview", title: "Overview", hint: "What is backed up, what is waiting and where it goes." },
   { key: "review", label: "New files", icon: "inbox", title: "New files", hint: "Found since your last decision. Back them up or skip them." },
@@ -24,6 +25,7 @@ const tabs: { key: Tab; label: string; icon: string; title: string; hint: string
   { key: "organize", label: "Organize", icon: "organize", title: "Organize", hint: "Gather documents, pictures and videos into one sorted folder." },
   { key: "logs", label: "Logs", icon: "log", title: "Logs", hint: "Everything the tool has done, newest first." },
   { key: "settings", label: "Settings", icon: "settings", title: "Settings", hint: "Backup drives, rules, schedule and notifications." },
+  { key: "network", label: "Other PCs", icon: "network", title: "Other PCs", hint: "Back up another PC over your network, or let one back up this PC." },
 ];
 const idle: Job = { state: "idle", type: "", message: "", done: 0, total: 0 };
 
@@ -92,7 +94,7 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       if (e.ctrlKey || e.metaKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
-      const n = Number(e.key);
+      const n = e.key === "0" ? 10 : Number(e.key);
       if (n >= 1 && n <= tabs.length) setTab(tabs[n - 1].key);
     };
     window.addEventListener("keydown", onKey);
@@ -155,6 +157,7 @@ export default function App() {
               </>
             ) : <span className="sub">No backup drive set</span>}
             <span className="sub">Last backup: {stats?.last_backup ?? "never"}</span>
+            {stats?.sharing && <span className="warn">Sharing on{stats.sharing_connected ? `: ${stats.sharing_connected} connected` : ""}</span>}
             {appVersion && <span className="sub">Version {appVersion}</span>}
           </div>
         </aside>
@@ -202,6 +205,7 @@ export default function App() {
               {tab === "organize" && <Organize busy={busy} onJob={onJob} />}
               {tab === "logs" && <Logs tick={tick} />}
               {tab === "settings" && <SettingsTab onSaved={loadStats} />}
+              {tab === "network" && <Network />}
             </Page>
           </main>
         </div>

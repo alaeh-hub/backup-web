@@ -26,3 +26,6 @@ desktop.ini
 backend/_version.py
 installer/out/
 installer/work/
+
+# private planning notes (never commit)
+WIRELESS_BACKUP.md

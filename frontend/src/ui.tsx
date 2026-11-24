@@ -18,6 +18,7 @@ const P: Record<string, string> = {
   cancel: "M6 6l12 12M18 6L6 18",
   drive: "M4 14l2-8h12l2 8M4 14v4h16v-4M4 14h16M16.5 16.5h.01",
   download: "M12 4v11M7.5 10.5L12 15l4.5-4.5M5 15v3a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3",
+  network: "M12 4v4M5 14h14M5 14v4M19 14v4M12 8v6M9 4h6v4H9zM2 18h6v3H2zM16 18h6v3h-6z",
   chevron: "M6 9l6 6 6-6",
 };
 

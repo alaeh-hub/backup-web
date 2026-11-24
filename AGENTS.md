@@ -46,6 +46,11 @@ build output, local state, secrets or machine-specific (for example `installer/o
 `.exe` files, caches or credentials. Add the `.gitignore` change in the same push.
 
 ## Other conventions
+- Wireless backup (`backend/pki.py`, `agent.py`, `remote.py`): the agent is READ-ONLY and must stay that way. Keep every path
+  check (`Agent.resolve`, `DENY_NAMES`, the app's own data folder), the LAN-only check, the certificate pinning in
+  `remote._connect`, and `clean_remote_rel` for names that come from another PC. Never add an endpoint that writes,
+  deletes or runs anything. Tests in `backend/tests/test_wireless.py` use real TLS on loopback; bind to `127.0.0.1` in tests
+  (a `0.0.0.0` bind makes Windows show a firewall prompt).
 - Never expose the Flask API on a public deployment: `vercel.json` must not route `/api` to the backend.
 - A backup copy is hashed while it is written (`copy_hashed`), never from a separate earlier read.
 - The installer (`installer/setup.iss`) kills running `AlaEhBackup.exe` copies before replacing the exe and reopens the app
