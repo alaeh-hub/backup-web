@@ -1,7 +1,7 @@
 """Ala Eh! File Backup launcher: `py app.py` starts the Flask backend AND the React/TypeScript
 frontend (Vite dev server, hot reload) together, opens the browser, and stops both on Ctrl+C.
 
-Env: FRONTEND_PORT [5173], BACKUP_PORT [5000], NO_BROWSER=1 to skip opening the browser.
+Env: FRONTEND_PORT [5174], BACKUP_PORT [5001], NO_BROWSER=1 to skip opening the browser.
 """
 import os, shutil, subprocess, sys, time, webbrowser
 from pathlib import Path
@@ -9,8 +9,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 BACKEND = ROOT / "backend"
 FRONTEND = ROOT / "frontend"
-FRONT_PORT = os.environ.get("FRONTEND_PORT", "5173")
-BACK_PORT = os.environ.get("BACKUP_PORT", "5000")
+FRONT_PORT = os.environ.get("FRONTEND_PORT", "5174")
+BACK_PORT = os.environ.get("BACKUP_PORT", "5001")
 
 
 def run(cmd, cwd):

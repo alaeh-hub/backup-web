@@ -11,8 +11,8 @@ Needs Python 3.12 or newer and Node.js 20 or newer.
 
     py app.py
 
-On first run this installs the Python and npm packages, starts the backend (http://127.0.0.1:5000) and the
-frontend (http://127.0.0.1:5173), and opens the browser. Ctrl+C stops both. `NO_BROWSER=1` skips opening the
+On first run this installs the Python and npm packages, starts the backend (http://127.0.0.1:5001) and the
+frontend (http://127.0.0.1:5174), and opens the browser. Ctrl+C stops both. `NO_BROWSER=1` skips opening the
 browser and `FRONTEND_PORT` changes the frontend port.
 
 Open the app at `localhost` or `127.0.0.1`. Other host names are refused on purpose.
@@ -57,7 +57,7 @@ Other parts:
 
     cd frontend
     npm ci
-    npm run dev        # http://localhost:5173, proxies /api to the backend on 5000
+    npm run dev        # http://localhost:5174, proxies /api to the backend on 5001
     npm run build      # type check and production build into frontend/dist
 
 Continuous integration (`.github/workflows/ci.yml`) runs the backend tests on Linux and Windows, and the
