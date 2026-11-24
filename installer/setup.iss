@@ -1,6 +1,6 @@
 ; Inno Setup script: installs AlaEhBackup.exe per-user (no admin rights needed).
 #ifndef AppVersion
-  #define AppVersion "1.1.0"
+  #define AppVersion "1.2.0"
 #endif
 
 [Setup]
@@ -29,4 +29,6 @@ Name: "{autodesktop}\Ala Eh! File Backup"; Filename: "{app}\AlaEhBackup.exe"; Ta
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 
 [Run]
+; After a silent self-update (started from inside the app) reopen the app; a normal install shows the checkbox below.
+Filename: "{app}\AlaEhBackup.exe"; Flags: nowait; Check: WizardSilent
 Filename: "{app}\AlaEhBackup.exe"; Description: "Open Ala Eh! File Backup now"; Flags: nowait postinstall skipifsilent

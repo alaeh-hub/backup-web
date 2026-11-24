@@ -46,6 +46,10 @@ build output, local state, secrets or machine-specific (for example `installer/o
 `.exe` files, caches or credentials. Add the `.gitignore` change in the same push.
 
 ## Other conventions
+- Self-update: the installed exe compares its version (stamped by `installer/build.ps1` into the git-ignored
+  `backend/_version.py`) with the latest GitHub release (`backend/updater.py`, `/api/update`). The release must keep the asset
+  name `AlaEhBackup-Setup.exe`. Don't weaken the checks (GitHub-only host, size and SHA-256 verification, POST only,
+  frozen exe only).
 - The packaged app is a native window (pywebview, `backend/desktop.py`) over the local Flask server. Desktop-only
   packages go in `backend/requirements-desktop.txt`, never `requirements.txt` (Vercel installs that one).
 - Dev ports: backend 5001, Vite dev server 5174 (`FRONTEND_PORT` overrides). Keep `app.py`,

@@ -12,7 +12,11 @@ Download `AlaEhBackup-Setup.exe` from the [latest release](https://github.com/al
 **Ala Eh! File Backup** from the Start Menu: it opens in its own desktop window, with no browser and no console.
 Closing the window stops the app, and scheduled scans only run while it is open.
 
-- To update, run the newer installer over the old one. Settings and history are kept in `~/.ala-eh-backup`.
+- **Updates:** when the app opens it checks the latest GitHub release. If there is a newer version, a banner shows
+  **Update now**: the app downloads the installer (only from GitHub, checked against its size and SHA-256), installs
+  it silently and reopens by itself. Nothing is installed without that click. Turn the check off in Settings, under
+  Updates, or with no internet it is simply skipped. You can also run a newer installer over the old one by hand.
+  Settings and history are kept in `~/.ala-eh-backup`. Versions older than 1.2.0 cannot update themselves: reinstall once.
 - The installer is not code-signed, so Windows SmartScreen may warn: choose **More info**, then **Run anyway**.
 - The app always runs on the PC it backs up. The Vercel site only hosts the page and the download button; the
   backend there cannot see your files.

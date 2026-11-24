@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 from pathlib import Path
 
+import updater
 from flask import Flask, Response, jsonify, request, send_from_directory
 
 ON_VERCEL = bool(os.environ.get("VERCEL"))      # serverless: only /tmp is writable, and it is not persistent
@@ -60,6 +61,7 @@ DEFAULTS = {
     "schedule": {"enabled": False, "time": "22:00", "days": [0, 1, 2, 3, 4, 5, 6]},
     "auto_scan_minutes": 0,
     "webhook": "",
+    "update_check": True,   # installed app: look for a newer release on GitHub
 }
 SETTINGS = {**DEFAULTS, **read_json("settings.json", {})}
 SETTINGS["versions"] = 0           # an older setting of 3 is ignored: the new copy replaces the old one
@@ -1075,6 +1077,7 @@ def scheduler():
 TOKENS = set()
 
 
+UPDATE_LOCK = threading.Lock()
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 FRONTEND_PORT = int(os.environ.get("FRONTEND_PORT", "5174"))
 FAILS = {}
@@ -1167,6 +1170,7 @@ def clean_settings(b):
     if w and not w.lower().startswith(("http://", "https://")):
         raise ValueError("Webhook must start with http:// or https://")
     s["webhook"] = w
+    s["update_check"] = bool(b.get("update_check", True))
     return s
 
 
@@ -1188,6 +1192,53 @@ def set_settings():
     write_json("settings.json", SETTINGS)
     log("info", "settings", "Settings saved")
     return get_settings()
+
+
+UPDATE = {"at": 0.0, "release": None, "error": ""}
+
+
+def update_status(force=False):
+    """What the UI shows about updates. GitHub is asked at most once every 6 hours (or when forced)."""
+    cur = updater.current_version()
+    out = {"enabled": bool(SETTINGS.get("update_check", True)), "current": cur, "latest": cur, "available": False,
+           "can_install": updater.can_install(), "page": updater.PAGE, "notes": "", "error": ""}
+    if not out["enabled"]:
+        return out
+    with UPDATE_LOCK:
+        if force or time.time() - UPDATE["at"] > 6 * 3600:
+            try:
+                UPDATE["release"], UPDATE["error"] = updater.fetch_latest(), ""
+            except Exception as e:                  # offline, rate limited, no release yet: never get in the way
+                UPDATE["release"], UPDATE["error"] = None, f"Could not check for updates ({type(e).__name__})."
+            UPDATE["at"] = time.time() if UPDATE["release"] else time.time() - 6 * 3600 + 300     # retry a failure in 5 min
+        rel, out["error"] = UPDATE["release"], UPDATE["error"]
+    if rel and rel["version"]:
+        out.update(latest=rel["version"], page=rel["page"], notes=rel["notes"],
+                   available=updater.parse(rel["version"]) > updater.parse(cur))
+    return out
+
+
+@app.get("/api/update")
+def update_get():
+    return jsonify(update_status(force=request.args.get("force") == "1"))
+
+
+@app.post("/api/update/install")
+def update_install():
+    st = update_status(force=True)
+    if not st["can_install"]:
+        return jsonify(error="Updating from here only works in the installed Windows app."), 400
+    if not st["available"]:
+        return jsonify(error="You already have the latest version."), 400
+    try:
+        path = updater.download(UPDATE["release"])
+    except Exception as e:
+        log("error", "update", f"Update to {st['latest']} failed: {e}")
+        return jsonify(error=str(e)), 502
+    log("info", "update", f"Updating {st['current']} -> {st['latest']}")
+    updater.run_installer(path)
+    threading.Timer(1.5, lambda: os._exit(0)).start()       # let the installer replace the exe; it reopens the app
+    return jsonify(ok=True, version=st["latest"])
 
 
 @app.post("/api/webhook/test")

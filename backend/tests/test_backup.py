@@ -262,3 +262,52 @@ def test_wrong_passwords_are_throttled(rig, monkeypatch):
     assert rig.get("/api/job").status_code == 200
     monkeypatch.setattr(backup, "TOKENS", set())
     assert rig.get("/api/job").status_code == 401
+
+
+# ---------------------------------------------------------------- self-update
+
+def test_update_versions_and_trust():
+    import updater
+    assert updater.parse("v1.10.0") > updater.parse("1.9.9") and updater.parse("1.2") == (1, 2, 0)
+    assert updater.trusted("https://github.com/x/y/releases/download/v1/a.exe")
+    assert updater.trusted("https://objects.githubusercontent.com/a")
+    assert not updater.trusted("http://github.com/a") and not updater.trusted("https://evil.example/github.com")
+    assert not updater.trusted("https://github.com.evil.example/a")
+
+
+def test_update_status_and_install_guard(rig, monkeypatch):
+    import updater
+    monkeypatch.setattr(updater, "current_version", lambda: "1.1.0")
+    release = {"version": "1.2.0", "page": updater.PAGE, "notes": "n", "url": "https://github.com/a/b/releases/download/v1.2.0/AlaEhBackup-Setup.exe", "size": 1, "sha256": ""}
+    monkeypatch.setattr(updater, "fetch_latest", lambda: release)
+    st = rig.get("/api/update?force=1").json
+    assert st["available"] and st["latest"] == "1.2.0" and st["current"] == "1.1.0" and not st["can_install"]
+    assert rig.post("/api/update/install").status_code == 400          # only the installed exe may self-update
+    release["version"] = "1.1.0"
+    assert not rig.get("/api/update?force=1").json["available"]
+    monkeypatch.setattr(updater, "fetch_latest", lambda: (_ for _ in ()).throw(OSError("offline")))
+    st = rig.get("/api/update?force=1").json
+    assert not st["available"] and "Could not check" in st["error"]      # offline never breaks the app
+    body = {**rig.get("/api/settings").json, "update_check": False}
+    assert rig.post("/api/settings", body).json["update_check"] is False
+    assert rig.get("/api/update?force=1").json["enabled"] is False
+
+
+def test_update_download_checks_integrity(tmp_path):
+    import hashlib, io, updater
+
+    class Resp(io.BytesIO):
+        def __init__(self, data, url): super().__init__(data); self._u = url
+        def geturl(self): return self._u
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    data = b"installer-bytes"
+    ok = {"url": "https://github.com/a/b/releases/download/v1/AlaEhBackup-Setup.exe", "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    path = updater.download(ok, opener=lambda req, timeout: Resp(data, ok["url"]))
+    assert path.read_bytes() == data
+    for bad in ({**ok, "sha256": "0" * 64}, {**ok, "size": 3}):
+        with pytest.raises(RuntimeError):
+            updater.download(bad, opener=lambda req, timeout: Resp(data, ok["url"]))
+    with pytest.raises(RuntimeError):                                    # redirected off GitHub
+        updater.download(ok, opener=lambda req, timeout: Resp(data, "https://evil.example/x"))
