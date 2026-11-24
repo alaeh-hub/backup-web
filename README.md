@@ -23,7 +23,7 @@ Needs Python 3.12 or newer and Node.js 20 or newer.
 
     py app.py
 
-On first run this installs the Python and npm packages, starts the backend (http://127.0.0.1:5000) and the
+On first run this installs the Python and npm packages, starts the backend (http://127.0.0.1:5001) and the
 frontend (http://127.0.0.1:5174), and opens the browser. Ctrl+C stops both. `NO_BROWSER=1` skips opening the
 browser and `FRONTEND_PORT` changes the frontend port.
 
@@ -69,12 +69,12 @@ Other parts:
 
     cd frontend
     npm ci
-    npm run dev        # http://localhost:5174, proxies /api to the backend on 5000
+    npm run dev        # http://localhost:5174, proxies /api to the backend on 5001
     npm run build      # type check and production build into frontend/dist
 
 ### Building the installer
 
-    powershell -ExecutionPolicy Bypass -File installeruild.ps1
+    powershell -ExecutionPolicy Bypass -File installer\build.ps1
 
 Needs Node.js, Python 3.12+ and [Inno Setup 6](https://jrsoftware.org/isinfo.php). It builds the frontend,
 packs the app with PyInstaller (`backend/desktop.py`, a native window via pywebview; desktop-only packages are

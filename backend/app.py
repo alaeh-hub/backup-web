@@ -7,7 +7,7 @@ Environment variables (all optional):
   BACKUP_DATA_DIR   where the tool keeps its own state          [~/.ala-eh-backup]
   BACKUP_PASSWORD   if set, the web UI asks for this password
   BACKUP_HOST       bind address                                [127.0.0.1]
-  BACKUP_PORT       port                                        [5000]
+  BACKUP_PORT       port                                        [5001]
 """
 import atexit, csv, fnmatch, gzip, hashlib, hmac, heapq, io, json, os, platform, re, secrets, shutil, string, sys, threading, time, urllib.request, uuid
 from datetime import datetime, timedelta
@@ -1739,4 +1739,4 @@ if __name__ == "__main__":
         raise SystemExit("BACKUP_HOST opens the tool to the network. Set BACKUP_PASSWORD first.")
     threading.Thread(target=saver, daemon=True).start()
     threading.Thread(target=scheduler, daemon=True).start()
-    app.run(host=BIND_HOST, port=int(os.environ.get("BACKUP_PORT", "5000")), threaded=True)
+    app.run(host=BIND_HOST, port=int(os.environ.get("BACKUP_PORT", "5001")), threaded=True)

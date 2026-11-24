@@ -9,7 +9,7 @@ from werkzeug.serving import make_server
 
 import app as core
 
-PORT = int(os.environ.get("BACKUP_PORT", "5000"))
+PORT = int(os.environ.get("BACKUP_PORT", "5001"))
 URL = f"http://127.0.0.1:{PORT}"
 TITLE = "Ala Eh! File Backup"
 

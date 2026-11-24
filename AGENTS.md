@@ -48,7 +48,7 @@ build output, local state, secrets or machine-specific (for example `installer/o
 ## Other conventions
 - The packaged app is a native window (pywebview, `backend/desktop.py`) over the local Flask server. Desktop-only
   packages go in `backend/requirements-desktop.txt`, never `requirements.txt` (Vercel installs that one).
-- Dev ports: backend 5000, Vite dev server 5174 (`FRONTEND_PORT` overrides). Keep `app.py`,
+- Dev ports: backend 5001, Vite dev server 5174 (`FRONTEND_PORT` overrides). Keep `app.py`,
   `backend/app.py` and `frontend/vite.config.ts` in sync if you change it.
 - Run `python -m pytest backend/tests -q` before pushing; all tests must pass.
 - Rebuild the installer locally with `powershell -ExecutionPolicy Bypass -File installer\build.ps1`.
