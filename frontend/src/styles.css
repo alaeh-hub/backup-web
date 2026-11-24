@@ -69,6 +69,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--color-accent);
 .block h2 { font-size: var(--text-lg); }
 .sub { color: var(--color-muted); font-size: var(--text-sm); }
 .k { color: var(--color-muted); font-size: var(--text-sm); font-weight: 600; }
+.update { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); flex-wrap: wrap; padding: var(--space-sm) var(--space-md); border: 1px solid var(--color-accent); border-radius: var(--radius-ctl); }
+.update p { margin: 0; }
+.update-actions { display: flex; gap: var(--space-xs); }
 .msg { margin: 0; color: var(--color-accent); font-weight: 600; }
 .err { margin: 0; color: var(--color-error); font-weight: 600; }
 .warn { color: var(--color-review); font-weight: 600; }

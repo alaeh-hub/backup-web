@@ -35,8 +35,9 @@ export function eta(job: Job): string {
 }
 export interface Settings {
   sources: string[]; destinations: string[]; excludes: string[]; max_size_mb: number; versions: number; compress: boolean;
-  schedule: { enabled: boolean; time: string; days: number[] }; auto_scan_minutes: number; webhook: string; whole_pc: boolean; scan_roots: string[]; skip_junk: boolean; new_files: "review" | "include"; junk_list: string[]; pc_name: string; data_dir: string; auth_required: boolean;
+  schedule: { enabled: boolean; time: string; days: number[] }; auto_scan_minutes: number; webhook: string; whole_pc: boolean; scan_roots: string[]; skip_junk: boolean; new_files: "review" | "include"; junk_list: string[]; pc_name: string; data_dir: string; auth_required: boolean; update_check: boolean;
 }
+export interface UpdateInfo { enabled: boolean; current: string; latest: string; available: boolean; can_install: boolean; page: string; notes: string; error: string }
 export interface LogRow { at: string; level: "info" | "warn" | "error"; action: string; message: string }
 export interface FolderRow { name: string; path: string; files: number; bytes: number; selected: number; review: number }
 export interface Explore { path: string; parent: string | null; total_files: number; folders: FolderRow[]; files: FileRow[] }

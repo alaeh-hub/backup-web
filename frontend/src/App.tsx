@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
-import { api, eta, fmt, Job, Stats } from "./api";
+import { api, eta, fmt, Job, Stats, UpdateInfo } from "./api";
 import { Dashboard } from "./Dashboard";
 import { Files } from "./Files";
 import { Review } from "./Review";
@@ -54,6 +54,10 @@ export default function App() {
   const [job, setJob] = useState<Job>(idle);
   const [msg, setMsg] = useState("");
   const [tick, setTick] = useState(0);
+  const [upd, setUpd] = useState<UpdateInfo | null>(null);
+  const [updating, setUpdating] = useState(false);
+  const [updErr, setUpdErr] = useState("");
+  const [updHidden, setUpdHidden] = useState(false);
   const prev = useRef<Job["state"]>("idle");
   const logo = useRef<HTMLImageElement>(null);
 
@@ -62,6 +66,12 @@ export default function App() {
 
   const loadStats = useCallback(async () => { try { setStats(await api<Stats>("/api/stats")); } catch { /* the login screen handles 401 */ } }, []);
   const pollJob = useCallback(async () => { try { setJob(await api<Job>("/api/job")); } catch { /* ignore */ } }, []);
+  useEffect(() => { if (auth === "ok") api<UpdateInfo>("/api/update").then(setUpd).catch(() => { /* offline: no banner */ }); }, [auth]);
+  const installUpdate = async () => {
+    setUpdating(true); setUpdErr("");
+    try { await api("/api/update/install", "POST"); }       // the app closes and reopens by itself
+    catch (e) { setUpdErr((e as Error).message); setUpdating(false); }
+  };
   useEffect(() => {
     if (auth !== "ok") return;
     loadStats(); pollJob();
@@ -171,6 +181,19 @@ export default function App() {
           </header>
 
           <main className="content">
+            {upd?.available && !updHidden && (
+              <div className="update" role="status">
+                <p><b>Update available: version {upd.latest}</b> <span className="sub">(you have {upd.current})</span>
+                  {updating ? " Downloading and installing... the app will reopen by itself." : ""}
+                  {updErr && <span className="err"> {updErr}</span>}</p>
+                <div className="update-actions">
+                  {upd.can_install
+                    ? <button className="primary" onClick={installUpdate} disabled={updating || busy} title={busy ? "Wait for the running job to finish" : undefined}>{updating ? "Updating..." : "Update now"}</button>
+                    : <a className="btn" href={upd.page} target="_blank" rel="noreferrer">See what is new</a>}
+                  {!updating && <button className="quiet" onClick={() => setUpdHidden(true)}>Later</button>}
+                </div>
+              </div>
+            )}
             {!busy && msg && <p className="msg" role="status">{msg}</p>}
             <Page key={["review", "selected", "files", "restore"].includes(tab) ? tab + ":" + tick : tab}>
               {tab === "dashboard" && <Dashboard stats={stats} busy={busy} go={setTab} onJob={onJob} />}

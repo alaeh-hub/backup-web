@@ -86,6 +86,11 @@ export function SettingsTab({ onSaved }: { onSaved: () => void }) {
         <div><button onClick={test} disabled={!s.webhook}>Send test message</button></div>
       </section>
       <section className="block">
+        <h2>Updates</h2>
+        <label className="check"><input type="checkbox" checked={s.update_check} onChange={e => set({ update_check: e.target.checked })} /> Check GitHub for a newer version when the app opens (installed app only)</label>
+        <p className="sub">Nothing is installed without you clicking Update now.</p>
+      </section>
+      <section className="block">
         <p className="sub">Changes are saved automatically.</p>
         {msg && <p className="msg" role="status">{msg}</p>}
         <p className="sub">Tool data is stored in {s.data_dir}. {s.auth_required ? "Password protected." : "Set the BACKUP_PASSWORD environment variable to require a password."}</p>
