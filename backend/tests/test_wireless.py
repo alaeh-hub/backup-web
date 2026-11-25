@@ -217,7 +217,7 @@ def test_another_pc_is_scanned_backed_up_and_restorable(rig, wired, tmp_path):
     backup.scan_job()
     assert sorted(f["rel"] for f in backup.INDEX.values()) == ["Reports" + os.sep + "q1.txt", "notes.txt"]
     f = next(iter(backup.INDEX.values()))
-    assert f["path"].startswith(os.sep * 2 + TAG + os.sep + "docs") and f["remote"]["pc"] == "b-id-1234567890"
+    assert f["path"].startswith(os.path.join("Other PCs", TAG, "docs")) and f["remote"]["pc"] == "b-id-1234567890"
     rig.choose_all()
     backup.backup_job()
     base = rig.dest / backup.pc_folder(str(rig.dest)) / "Remote PCs" / TAG / "docs"
@@ -429,3 +429,96 @@ def test_no_web_font_is_loaded_from_the_internet():
     html = (web / "index.html").read_text(encoding="utf8")
     assert "googleapis" not in html and "gstatic" not in html and "http" not in html.replace("http-equiv", "")
     assert "@fontsource-variable/hanken-grotesk" in (web / "src" / "main.tsx").read_text(encoding="utf8")
+
+
+# ---------------------------------------------------------------- remote files in the lists, and knowing the other PC's state
+
+def test_remote_files_appear_in_new_files_selected_and_files(rig, wired):
+    wired.write("Reports/q1.txt", "q")
+    wired.write("notes.txt", "n")
+    backup.scan_job()
+    new = rig.get("/api/review").json
+    assert new["files"] == 2 and new["count"] >= 1                         # what the badge counts, the list shows
+    names = sorted(i["name"] for i in new["items"])
+    assert names == ["Reports", "notes.txt"]                                # the folder, and the file beside it
+    rig.choose_all()
+    sel = rig.get("/api/selected").json
+    assert sel["files"] == 2 and sel["count"] >= 1
+    top = rig.get("/api/explore").json                                      # the Files tab can open the remote PC's folder
+    assert top["folders"] and top["folders"][0]["files"] == 2
+    inside = rig.get("/api/explore", query_string={"path": top["folders"][0]["path"]}).json
+    assert inside["total_files"] == 1 and [f["path"].endswith("notes.txt") for f in inside["files"]] == [True]
+    assert [f["name"] for f in inside["folders"]] == ["Reports"]
+
+
+def test_each_paired_pc_is_reported_as_online_sharing_off_removed_or_changed(rig, wired):
+    pid = "b-id-1234567890"
+    state = lambda: rig.get("/api/peers", query_string={"check": "1"}).json[0]
+    assert rig.get("/api/peers").json[0]["state"] == "unknown"                 # nothing asked yet
+    s = state()
+    assert s["state"] == "online" and s["checked_at"]
+    real = backup.PEERS.get(pid)["fp"]
+    backup.PEERS.update(pid, fp="0" * 64)
+    assert state()["state"] == "changed"                                       # not the PC that was paired
+    backup.PEERS.update(pid, fp=real)
+    wired.b.revoke(wired.b.status()["clients"][0]["id"])
+    assert state()["state"] == "removed"                                       # that PC removed this one
+    wired.b.stop()
+    s = state()
+    assert s["state"] == "off" and "Sharing is off" in s["state_text"]         # the PC answers, sharing is off
+
+
+def test_a_pc_that_is_not_on_the_network_is_reported_as_unreachable(rig, wired):
+    pid = "b-id-1234567890"
+    backup.PEERS.update(pid, host="10.255.255.1")                              # nothing answers there
+    backup.probe_peers({pid}, timeout=1)
+    assert backup.PEER_STATE[pid]["state"] == "offline" and "cannot be reached" in backup.PEER_STATE[pid]["text"]
+
+
+def test_scanning_a_pc_that_stopped_sharing_says_so_and_stops_promising_its_files(rig, wired):
+    wired.write("a.txt", "a")
+    backup.scan_job()
+    rig.choose_all()
+    assert rig.get("/api/stats").json["pending_files"] == 1
+    wired.b.stop()                                                             # the other PC turns sharing off
+    msg = backup.scan_job()
+    assert "OFFICE-PC is not available" in msg and "sharing is off" in msg.lower() and "cannot be backed up" in msg
+    assert "Scanned 0 files, 0 B" in msg and "Everything chosen is backed up" not in msg and "cannot be reached right now" in msg
+    st = rig.get("/api/stats").json
+    assert st["pending_files"] == 0                                            # nothing is waiting that cannot be copied
+    assert st["offline_pcs"][0]["name"] == "OFFICE-PC" and st["offline_pcs"][0]["files"] == 1
+    assert "cannot be reached" in backup.backup_job() or "Nothing could be copied" in backup.backup_job()
+    assert next(iter(backup.INDEX.values()))["stale"] is True
+
+
+def test_the_list_is_fresh_again_when_the_pc_is_back(rig, wired, monkeypatch):
+    wired.write("a.txt", "a")
+    backup.scan_job()
+    rig.choose_all()
+    wired.b.stop()
+    backup.scan_job()
+    assert next(iter(backup.INDEX.values())).get("stale")
+    again = wired.b.start(host="127.0.0.1", port=wired.port, discovery=False)  # sharing is turned back on
+    assert again["running"]
+    backup.scan_job()
+    f = next(iter(backup.INDEX.values()))
+    assert not f.get("stale") and rig.get("/api/stats").json["offline_pcs"] == [] and rig.get("/api/stats").json["pending_files"] == 1
+    assert next(iter(backup.META["remote_scans"].values()))["files"] == 1       # when and how much was last scanned
+
+
+def test_a_list_written_by_1_3_0_moves_to_the_new_path_form_without_losing_its_backups(rig, wired):
+    wired.write("Reports/q1.txt", "quarterly")
+    backup.scan_job()
+    rig.choose_all()
+    backup.backup_job()
+    f = dict(next(iter(backup.INDEX.values())))
+    peer = backup.PEERS.get("b-id-1234567890")
+    old_path = backup.old_remote_key(peer, "docs") + os.sep + f["rel"]
+    old = {**f, "id": backup.fid_of(old_path), "path": old_path, "src": backup.old_remote_key(peer, "docs")}
+    backup.INDEX.clear()
+    backup.INDEX[old["id"]] = old                                              # what 1.3.0 or 1.3.1 had saved
+    backup.scan_job()
+    assert len(backup.INDEX) == 1 and not backup.GONE                          # moved, not duplicated or orphaned
+    new = next(iter(backup.INDEX.values()))
+    assert new["path"].startswith("Other PCs") and backup.status(new, [str(rig.dest)]) == "backed_up"
+    assert rig.get("/api/review").json["files"] == 0 and rig.get("/api/selected").json["files"] == 1

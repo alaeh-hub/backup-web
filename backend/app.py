@@ -358,7 +358,7 @@ def status(f, ds):
 
 
 def is_pending(f, ds):
-    return bool(f["selected"]) and status(f, ds) != "backed_up"
+    return bool(f["selected"]) and not f.get("stale") and status(f, ds) != "backed_up"
 
 
 def hash_stream(fh):
@@ -542,7 +542,13 @@ def peer_tag(peer):
 
 
 def remote_key(peer, root):
-    """How a folder of another PC is shown in the file list, written like a network path (two separators, the PC, the folder)."""
+    """How a folder of another PC is shown in the file list: Other PCs / name (id) / folder. A plain relative path, so every
+    path function treats it like any other (a share-style \\\\name\\folder is mangled by Windows' own path code)."""
+    return os.path.join("Other PCs", peer_tag(peer), safe_name(root))
+
+
+def old_remote_key(peer, root):
+    """The share-style form versions 1.3.0 and 1.3.1 wrote, kept only to carry their lists over."""
     return os.sep * 2 + peer_tag(peer) + os.sep + safe_name(root)
 
 
@@ -654,18 +660,46 @@ def scan_summary():
     with LOCK:
         fl = list(INDEX.values())
     pend = [f for f in fl if is_pending(f, ds)]
+    away = sum(1 for f in fl if f.get("stale") and f["selected"] and status(f, ds) != "backed_up")
     review = sum(1 for f in fl if not f.get("reviewed", True))
     chosen = sum(1 for f in fl if f["selected"])
     more = f" {review:,} new files are waiting for your review." if review else ""
+    gone = f" {away:,} chosen files are on a PC that cannot be reached right now." if away else ""
     if pend:
-        return f"{len(pend):,} files ({fmt(sum(f['size'] for f in pend))}) are waiting to back up." + more
+        return f"{len(pend):,} files ({fmt(sum(f['size'] for f in pend))}) are waiting to back up." + gone + more
     if chosen:
+        if away:
+            return (gone + more).strip()
         return ("Everything chosen is backed up." + more) if review else "Everything is backed up. Nothing new or changed."
     return more.strip() or "Nothing is chosen for backup yet."
 
 
+def _dir_key(path):
+    return os.path.normcase(str(path).rstrip("\\/")) + os.sep
+
+
+def skipped_dirs():
+    """Folders the user skipped as a whole. Files that appear inside them later stay skipped."""
+    return tuple(_dir_key(p) for p in META.get("skipped_dirs", []))
+
+
+def in_skipped(path, rules_):
+    return bool(rules_) and os.path.normcase(path).startswith(rules_)
+
+
+def set_dir_rule(prefix, skip):
+    """Remember a whole-folder choice. Backing a folder up again lifts the rule for it and every folder inside it."""
+    key = _dir_key(prefix)
+    cur = [p for p in META.get("skipped_dirs", []) if not _dir_key(p).startswith(key)]
+    if skip and not any(key.startswith(_dir_key(p)) for p in cur):
+        cur.append(str(prefix).rstrip("\\/"))
+    META["skipped_dirs"] = cur
+    write_json("meta.json", META)
+
+
 def scan_job():
     match = compile_rules(rules())
+    skip_rules = skipped_dirs()
     maxb = int(SETTINGS["max_size_mb"]) * 1048576
     skipdirs = {os.path.normcase(os.path.abspath(d)) for d in SETTINGS["destinations"]}
     srcs = sources()
@@ -726,16 +760,18 @@ def scan_job():
                         continue                       # the same file under two overlapping folders: the first one wins
                     old = INDEX.get(i)
                     keep = bool(old and old.get("backed"))      # its copy is filed under the old label and path: keep them
+                    barred = not old and in_skipped(p, skip_rules)     # new inside a folder the user skipped: stays skipped
                     new[i] = {"id": i, "path": p, "src": src, "label": old["label"] if keep else label,
                               "rel": old["rel"] if keep else rel,
                               "size": st.st_size, "mtime": st.st_mtime,
-                              "selected": old["selected"] if old else int(auto),
-                              "reviewed": old.get("reviewed", True) if old else auto,
+                              "selected": old["selected"] if old else int(auto and not barred),
+                              "reviewed": old.get("reviewed", True) if old else (auto or barred),
                               "backed": old.get("backed", {}) if old else {}}
                     count += 1
                     if count % 2000 == 0:
                         job_set(done=count, total=max(expected, count), message=f"Scanned {count:,} files...")
     scanned = set(srcs)
+    offline, moved_all = [], set()
     for rs in SETTINGS.get("remote_sources", []):          # folders of other paired PCs, read over the network
         peer = PEERS.get(rs.get("pc", ""))
         if not peer:
@@ -743,7 +779,8 @@ def scan_job():
         rroot = rs["root"]
         key = remote_key(peer, rroot)
         rlabel = os.path.join("Remote PCs", peer_tag(peer), safe_name(rroot))
-        rnew, rfailed, refused = {}, [], 0
+        rnew, rfailed, refused, moved = {}, [], 0, set()
+        old_key = old_remote_key(peer, rroot)
         job_set(message=f"Scanning {peer['name']} ({rroot})...")
         try:
             for item in rclient(peer["id"]).walk(rroot, rules(), maxb):
@@ -761,20 +798,32 @@ def scan_job():
                 if i in rnew:
                     continue
                 old = INDEX.get(i)
+                if old is None:                                    # a list written by 1.3.0 or 1.3.1 moves to the new form
+                    oid = fid_of(old_key + sep + rel)
+                    old = INDEX.get(oid)
+                    if old is not None:
+                        moved.add(oid)
                 keep = bool(old and old.get("backed"))
+                barred = not old and in_skipped(p, skip_rules)
                 rnew[i] = {"id": i, "path": p, "src": key, "label": old["label"] if keep else rlabel,
                            "rel": old["rel"] if keep else rel, "size": size, "mtime": mtime,
-                           "selected": old["selected"] if old else int(auto),
-                           "reviewed": old.get("reviewed", True) if old else auto,
+                           "selected": old["selected"] if old else int(auto and not barred),
+                           "reviewed": old.get("reviewed", True) if old else (auto or barred),
                            "backed": old.get("backed", {}) if old else {},
                            "remote": {"pc": peer["id"], "root": rroot, "rel": rel_s}}
                 count += 1
                 if count % 2000 == 0:
                     job_set(done=count, total=max(expected, count), message=f"Scanned {count:,} files...")
         except remote.RemoteError as e:
-            log("warn", "scan", f"Could not scan {peer['name']} ({rroot}): {e} Its old list is kept.")
+            state = set_peer_state(peer["id"], kind_state(e.kind))
+            why = STATE_TEXT[state].rstrip(".")
+            log("warn", "scan", f"Could not scan {peer['name']} ({rroot}): {why}. Its list is kept from the last scan.")
+            offline.append(f"{peer['name']} is not available ({why[0].lower() + why[1:]}): its list is from the last scan and its files cannot be backed up until it is back.")
             keep_src.add(key)
             continue
+        set_peer_state(peer["id"], "online")
+        META.setdefault("remote_scans", {})[f"{peer['id']}/{rroot}"] = {"at": time.time(), "files": len(rnew), "bytes": sum(f["size"] for f in rnew.values())}
+        moved_all.update(moved)
         if refused:
             log("warn", "scan", f"{peer['name']} ({rroot}) sent {refused} file names that were refused as unsafe.")
         new.update(rnew)
@@ -782,10 +831,14 @@ def scan_job():
         scanned.add(key)
     with LOCK:
         for i, f in INDEX.items():
+            if i in moved_all:
+                continue                                   # carried over to its new form above
             if i in new:                                   # keep any choice made while the scan was running
                 cur = new[i]
                 cur["selected"], cur["reviewed"], cur["backed"] = f["selected"], f.get("reviewed", True), f.get("backed", {})
             elif f["src"] in keep_src or any(os.path.normcase(f["path"]).startswith(p + os.sep) for p in failed):
+                if f.get("remote") and f["src"] in keep_src:
+                    f["stale"] = True                      # from the last scan of a PC that cannot be reached now
                 new[i] = f                                 # could not be read this time: keep it as it was
             elif f.get("backed") and (f["src"] in scanned or f.get("remote")):
                 GONE[i] = f                                # deleted from the PC, but the backup copy stays restorable
@@ -798,8 +851,10 @@ def scan_job():
     META["last_scan"] = time.time()
     META["last_scan_count"] = count
     write_json("meta.json", META)
-    total = sum(f["size"] for f in new.values())
+    total = sum(f["size"] for f in new.values() if not f.get("stale"))     # files of a PC that was not reached are not counted as scanned
     msg = f"Scanned {count:,} files, {fmt(total)} in total. " + scan_summary()
+    if offline:
+        msg = " ".join(offline) + " " + msg
     log("info", "scan", msg)
     return msg
 
@@ -890,10 +945,25 @@ def backup_job(trigger="manual", scan_first=False):
         pc_folder(d, create=True)
     with LOCK:
         todo = [f for f in INDEX.values() if is_pending(f, ds)]
+    waiting = sorted({f["remote"]["pc"] for f in todo if f.get("remote")})
+    away = 0
+    if waiting:                                            # the other PC may have gone since the last scan: ask before copying
+        probe_peers(set(waiting))
+        gone_pcs = {pid for pid in waiting if PEER_STATE.get(pid, {}).get("state") != "online"}
+        for f in list(todo):
+            if f.get("remote") and f["remote"]["pc"] in gone_pcs:
+                f["stale"] = True
+                todo.remove(f)
+                away += 1
+        for pid in gone_pcs:
+            peer = PEERS.get(pid)
+            log("warn", "backup", f"Skipped the files of {peer['name'] if peer else 'a PC'}: {PEER_STATE[pid]['text'].rstrip('.')}.")
     if SETTINGS.get("deep_check"):
         todo += deep_changed(ds, {f["id"] for f in todo})
+    unreachable = sum(1 for f in INDEX.values() if f.get("stale") and f["selected"] and status(f, ds) != "backed_up")
     if not todo:
-        msg = "Everything is already backed up. Nothing new or changed to copy."
+        msg = ("Everything is already backed up. Nothing new or changed to copy." if not unreachable
+               else f"Nothing could be copied: {unreachable:,} chosen files are on a PC that cannot be reached right now.")
         log("info", "backup", msg)
         return msg
     need = {d: 0 for d in ds}
@@ -953,7 +1023,7 @@ def backup_job(trigger="manual", scan_first=False):
         log("error", "backup", e)
     secs = round(time.time() - t0, 1)
     msg = (f"Backup ({trigger}): {copied} copied ({fmt(cbytes)}), {skipped} unchanged, "
-           f"{failed} failed in {secs}s")
+           f"{failed} failed in {secs}s" + (f". {unreachable:,} files on a PC that cannot be reached were skipped." if unreachable else ""))
     log("warn" if failed else "info", "backup", msg)
     HISTORY.append({"at": datetime.now().isoformat(sep=" ", timespec="seconds"), "trigger": trigger,
                     "copied": copied, "skipped": skipped, "failed": failed,
@@ -975,7 +1045,8 @@ def save_state_copy(ds):
         try:
             with gzip.open(Path(d) / pc_folder(d) / "choices.json.gz", "wt", encoding="utf8") as o:
                 json.dump({"pc": PC["name"], "saved": datetime.now().isoformat(timespec="seconds"),
-                           "files": snap, "excludes": SETTINGS["excludes"]}, o, separators=(",", ":"))
+                           "files": snap, "excludes": SETTINGS["excludes"],
+                           "skipped_dirs": META.get("skipped_dirs", [])}, o, separators=(",", ":"))
         except OSError as e:
             log("warn", "backup", f"Could not save choices on {d}: {e}")
 
@@ -1602,6 +1673,7 @@ def select():
                 return jsonify(error="No folder given"), 400
             pre = b["prefix"].rstrip("\\/") + os.sep
             targets = [f for f in INDEX.values() if f["path"].startswith(pre)]
+            set_dir_rule(b["prefix"], not sel)      # skipping a whole folder also covers files added to it later
         elif "dir" in b:
             if not str(b["dir"]).strip():
                 return jsonify(error="No folder given"), 400
@@ -1920,7 +1992,7 @@ def _stats_core():
         if f["selected"]:
             r["selected_files"] += 1
             r["selected_bytes"] += sz
-            if s != "backed_up":
+            if s != "backed_up" and not f.get("stale"):
                 r["pending_files"] += 1
                 r["pending_bytes"] += sz
         if s == "backed_up":
@@ -1935,6 +2007,7 @@ def _stats_core():
     today = datetime.now().date()
     for h in HISTORY:
         days[h["at"][:10]] = days.get(h["at"][:10], 0) + h["copied_bytes"]
+    r["offline_pcs"] = offline_pcs(fl)
     r["history"] = [{"day": (today - timedelta(days=i)).strftime("%m-%d"),
                      "bytes": days.get((today - timedelta(days=i)).isoformat(), 0)} for i in range(13, -1, -1)]
     r["largest_files"] = [{"path": f["path"], "size": f["size"]} for f in heapq.nlargest(10, fl, key=lambda f: f["size"])]
@@ -2018,14 +2091,74 @@ def agent_revoke():
     return jsonify(AGENT.status())
 
 
+STATE_TEXT = {
+    "online": "Online.",
+    "off": "Sharing is off, or the app is closed, on that PC.",
+    "offline": "That PC cannot be reached: it is off, asleep or on another network.",
+    "removed": "That PC no longer accepts this PC. Pair again.",
+    "changed": "That PC's identity changed. Forget it and pair again.",
+    "error": "That PC could not be checked.",
+    "unknown": "Not checked yet.",
+}
+PEER_STATE = {}                                            # pc id -> {"state", "text", "at"}
+
+
+def kind_state(kind):
+    return {"refused": "off", "unreachable": "offline", "rejected": "removed", "identity": "changed"}.get(kind, "error")
+
+
+def set_peer_state(pid, state):
+    PEER_STATE[pid] = {"state": state, "text": STATE_TEXT[state], "at": time.time()}
+    return state
+
+
+def probe_peers(ids=None, timeout=3):
+    """Ask each paired PC (in parallel) whether it is there and sharing. Fast: a few seconds at most."""
+    peers = [p for p in PEERS.all() if ids is None or p["id"] in ids]
+
+    def one(p):
+        try:
+            remote.RemoteClient(p, AGENT.identity(), PEERS, timeout=timeout).hello()
+            set_peer_state(p["id"], "online")
+        except remote.RemoteError as e:
+            set_peer_state(p["id"], kind_state(e.kind))
+        except Exception:
+            set_peer_state(p["id"], "error")
+    threads = [threading.Thread(target=one, args=(p,), daemon=True) for p in peers]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout * 3 + 3)
+
+
+def offline_pcs(files):
+    """Paired PCs whose files are only known from an earlier scan, because they cannot be reached now."""
+    out = {}
+    for f in files:
+        if f.get("stale") and f.get("remote"):
+            pid = f["remote"]["pc"]
+            peer = PEERS.get(pid)
+            if peer:
+                st = PEER_STATE.get(pid) or {"state": "offline", "text": STATE_TEXT["offline"]}
+                e = out.setdefault(pid, {"id": pid, "name": peer["name"], "state": st["state"], "text": st["text"], "files": 0, "bytes": 0})
+                e["files"] += 1
+                e["bytes"] += f["size"]
+    return list(out.values())
+
+
 def peer_view(p):
     chosen = [rs["root"] for rs in SETTINGS.get("remote_sources", []) if rs.get("pc") == p["id"]]
+    st = PEER_STATE.get(p["id"]) or {"state": "unknown", "text": STATE_TEXT["unknown"], "at": None}
+    scans = {k.split("/", 1)[1]: v for k, v in META.get("remote_scans", {}).items() if k.startswith(p["id"] + "/")}
     return {"id": p["id"], "name": p["name"], "host": p["host"], "port": p["port"], "fingerprint": p["fp"][:16],
-            "added": p.get("added", ""), "last_seen": p.get("last_seen", ""), "roots": chosen}
+            "added": p.get("added", ""), "last_seen": p.get("last_seen", ""), "roots": chosen,
+            "state": st["state"], "state_text": st["text"], "checked_at": st["at"], "scans": scans}
 
 
 @app.get("/api/peers")
 def peers_list():
+    if request.args.get("check") == "1":
+        probe_peers()                                      # is each PC there, and is it sharing?
     return jsonify([peer_view(p) for p in PEERS.all()])
 
 
@@ -2080,7 +2213,8 @@ def peers_roots(pid):
     try:
         hello = rclient(pid).hello()
     except remote.RemoteError as e:
-        return bad(e, 502)
+        return bad(STATE_TEXT[set_peer_state(pid, kind_state(e.kind))], 502)
+    set_peer_state(pid, "online")
     chosen = [rs["root"] for rs in SETTINGS.get("remote_sources", []) if rs.get("pc") == pid]
     return jsonify(online=True, name=hello.get("name"), roots=[{"label": r, "chosen": r in chosen} for r in hello.get("roots", [])])
 

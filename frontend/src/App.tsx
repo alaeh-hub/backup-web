@@ -181,6 +181,12 @@ export default function App() {
           </header>
 
           <main className="content">
+            {stats?.offline_pcs?.map(o => (
+              <div key={o.id} className="update away" role="status">
+                <p><b>{o.name} cannot be reached.</b> <span className="sub">{o.text} Its {o.files.toLocaleString()} files ({fmt(o.bytes)}) are from the last scan and cannot be backed up until it is back.</span></p>
+                <div className="update-actions"><button onClick={() => setTab("network")}>Open Other PCs</button></div>
+              </div>
+            ))}
             {upd?.available && !updHidden && (
               <div className="update" role="status">
                 <p><b>Update available: version {upd.latest}</b> <span className="sub">(you have {upd.current})</span>

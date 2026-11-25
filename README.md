@@ -46,7 +46,8 @@ In this mode the app opens in your browser. Open the app at `localhost` or `127.
    removable are not scanned either.
 2. **Decide what to back up.** Every new file waits in **New files** until you choose. Use a **Quick pick**
    (Office PC, Documents only, Everything) in **Files**, choose by folder, by type or by size, or decide in
-   **New files**. **Selected** lists everything chosen. Skipped files stay skipped.
+   **New files**. **Selected** lists everything chosen. Skipped files stay skipped. Skipping a whole folder (or turning it
+   off) also covers files added to it later: they do not come back to New files. Back the folder up again to lift this.
 3. **Back up now.** Scans, then copies only chosen files that are new or changed to the backup drive, into a
    folder named after the PC. A changed file replaces its old copy; no older versions are kept. A copy is
    written beside the old one and swapped in only when complete.
@@ -87,6 +88,10 @@ How it stays safe:
 - Only addresses on your own network are served. The app does not use UPnP or open router ports.
 - B shows who is connected and a log of every request. Sharing turns itself off after a few hours unless you choose otherwise.
 - File names sent by another PC are checked before they become paths on A's drive.
+
+Each paired PC shows its state: **Online**, **Sharing is off**, **Not reachable** (off, asleep or on another network), or **Pairing removed**. If a PC
+is away when you scan, its files stay listed from the last scan, are marked as old, are not counted as waiting to back up, and
+the app says so; they are scanned again as soon as the PC is back. Backups already made stay restorable.
 
 Needs: both PCs on the same Wi-Fi or network, B on and awake, and this app running on A while it backs up. The first time,
 Windows asks whether to allow the app: allow **private networks** only. `BACKUP_SHARE_HOST` limits sharing to one address.

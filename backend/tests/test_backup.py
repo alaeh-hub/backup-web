@@ -129,6 +129,44 @@ def test_new_files_are_held_and_skipped_files_stay_skipped(rig):
     assert a.exists()
 
 
+def test_new_files_inside_a_skipped_folder_stay_skipped(rig):
+    rig.write("A/B/old.txt")
+    rig.write("Docs/keep.txt")
+    backup.scan_job()
+    rig.post("/api/files/select", {"selected": False, "prefix": str(rig.src / "A")})
+    rig.write("A/B/C/new.txt")
+    rig.write("A/new2.txt")
+    rig.write("Docs/new3.txt")
+    backup.scan_job()
+    review = [i["name"] for i in rig.get("/api/review").json["items"]]
+    assert "new.txt" not in review and "new2.txt" not in review
+    assert any("keep.txt" in n or "new3.txt" in n or n == "Docs" for n in review)
+    assert rig.get("/api/stats").json["skipped_files"] == 3
+
+
+def test_skipped_folder_rule_holds_with_include_new_files(rig, monkeypatch):
+    rig.write("A/old.txt")
+    backup.scan_job()
+    rig.post("/api/files/select", {"selected": False, "prefix": str(rig.src / "A")})
+    monkeypatch.setitem(backup.SETTINGS, "new_files", "include")
+    rig.write("A/new.txt")
+    rig.write("Other/new.txt")
+    backup.scan_job()
+    sel = {f["path"]: f["selected"] for f in backup.INDEX.values()}
+    assert sel[str(rig.src / "A" / "new.txt")] == 0
+    assert sel[str(rig.src / "Other" / "new.txt")] == 1
+
+
+def test_backing_a_skipped_folder_up_again_lifts_the_rule(rig):
+    rig.write("A/old.txt")
+    backup.scan_job()
+    rig.post("/api/files/select", {"selected": False, "prefix": str(rig.src / "A")})
+    rig.post("/api/files/select", {"selected": True, "prefix": str(rig.src / "A")})
+    rig.write("A/new.txt")
+    backup.scan_job()
+    assert [i["name"] for i in rig.get("/api/review").json["items"]] == ["new.txt"]
+
+
 def test_a_choice_made_during_a_scan_is_kept(rig, monkeypatch):
     rig.write("Docs/a.txt")
     backup.scan_job()

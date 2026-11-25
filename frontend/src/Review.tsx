@@ -35,7 +35,7 @@ function Inside({ cwd, setCwd, onChange }: { cwd: string; setCwd: (p: string) =>
         {ex?.parent && <button onClick={() => setCwd(ex.parent!)}>Up</button>}
         <span className="grow" />
         <button className="primary" onClick={() => sel({ selected: true, prefix: cwd }, e => mark(e, true))}>Back up this whole folder</button>
-        <button onClick={() => sel({ selected: false, prefix: cwd }, e => mark(e, false))}>Skip this whole folder</button>
+        <button title="Files added to this folder later stay skipped too" onClick={() => sel({ selected: false, prefix: cwd }, e => mark(e, false))}>Skip this whole folder</button>
       </div>
       <ul className="rows">
         {ex?.folders.map(f => (

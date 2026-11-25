@@ -33,6 +33,7 @@ export function Dashboard({ stats, busy, go, onJob }: { stats: Stats | null; bus
           <div>
             <span className="k">Scanned on {stats.pc_name}</span>
             <CountUp className="big" value={stats.total_bytes} format={fmt} />
+            {!!stats.offline_pcs?.length && <span className="sub">Includes {fmt(stats.offline_pcs.reduce((n, o) => n + o.bytes, 0))} from the last scan of {stats.offline_pcs.map(o => o.name).join(", ")}, which cannot be reached now.</span>}
           </div>
           <div className="ledger-meta">
             <span><b>{stats.files.toLocaleString()}</b> files</span>
