@@ -69,6 +69,7 @@ def rig(tmp_path, monkeypatch):
     backup.FAILS.clear()
     backup.PEER_STATE.clear()
     backup.META.pop("remote_scans", None)
+    backup.META.pop("skipped_dirs", None)
     backup.CANCEL.clear()
     backup.JOB.update(state="idle", type="", message="", done=0, total=0)
     r = Rig(tmp_path)

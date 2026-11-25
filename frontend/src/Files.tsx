@@ -75,7 +75,7 @@ function FileBrowser({ onChange }: { onChange: () => void }) {
       <div className="toolbar">
         <span className="sub grow">{explorer ? "Open a folder to see what is inside. Search or filter to see a flat list of files." : `${total.toLocaleString()} files, ${fmt(bytes)}`}</span>
         <button onClick={() => bulk(true)}>{explorer && cwd ? "Back up this whole folder" : explorer ? "Select everything" : "Select all shown"}</button>
-        <button onClick={() => bulk(false)}>{explorer && cwd ? "Skip this whole folder" : explorer ? "Skip everything" : "Select none shown"}</button>
+        <button title={explorer && cwd ? "Files added to this folder later stay skipped too" : undefined} onClick={() => bulk(false)}>{explorer && cwd ? "Skip this whole folder" : explorer ? "Skip everything" : "Select none shown"}</button>
       </div>
       {explorer ? (
         <>

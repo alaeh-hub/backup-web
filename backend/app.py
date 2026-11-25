@@ -674,8 +674,32 @@ def scan_summary():
     return more.strip() or "Nothing is chosen for backup yet."
 
 
+def _dir_key(path):
+    return os.path.normcase(str(path).rstrip("\\/")) + os.sep
+
+
+def skipped_dirs():
+    """Folders the user skipped as a whole. Files that appear inside them later stay skipped."""
+    return tuple(_dir_key(p) for p in META.get("skipped_dirs", []))
+
+
+def in_skipped(path, rules_):
+    return bool(rules_) and os.path.normcase(path).startswith(rules_)
+
+
+def set_dir_rule(prefix, skip):
+    """Remember a whole-folder choice. Backing a folder up again lifts the rule for it and every folder inside it."""
+    key = _dir_key(prefix)
+    cur = [p for p in META.get("skipped_dirs", []) if not _dir_key(p).startswith(key)]
+    if skip and not any(key.startswith(_dir_key(p)) for p in cur):
+        cur.append(str(prefix).rstrip("\\/"))
+    META["skipped_dirs"] = cur
+    write_json("meta.json", META)
+
+
 def scan_job():
     match = compile_rules(rules())
+    skip_rules = skipped_dirs()
     maxb = int(SETTINGS["max_size_mb"]) * 1048576
     skipdirs = {os.path.normcase(os.path.abspath(d)) for d in SETTINGS["destinations"]}
     srcs = sources()
@@ -736,11 +760,12 @@ def scan_job():
                         continue                       # the same file under two overlapping folders: the first one wins
                     old = INDEX.get(i)
                     keep = bool(old and old.get("backed"))      # its copy is filed under the old label and path: keep them
+                    barred = not old and in_skipped(p, skip_rules)     # new inside a folder the user skipped: stays skipped
                     new[i] = {"id": i, "path": p, "src": src, "label": old["label"] if keep else label,
                               "rel": old["rel"] if keep else rel,
                               "size": st.st_size, "mtime": st.st_mtime,
-                              "selected": old["selected"] if old else int(auto),
-                              "reviewed": old.get("reviewed", True) if old else auto,
+                              "selected": old["selected"] if old else int(auto and not barred),
+                              "reviewed": old.get("reviewed", True) if old else (auto or barred),
                               "backed": old.get("backed", {}) if old else {}}
                     count += 1
                     if count % 2000 == 0:
@@ -779,10 +804,11 @@ def scan_job():
                     if old is not None:
                         moved.add(oid)
                 keep = bool(old and old.get("backed"))
+                barred = not old and in_skipped(p, skip_rules)
                 rnew[i] = {"id": i, "path": p, "src": key, "label": old["label"] if keep else rlabel,
                            "rel": old["rel"] if keep else rel, "size": size, "mtime": mtime,
-                           "selected": old["selected"] if old else int(auto),
-                           "reviewed": old.get("reviewed", True) if old else auto,
+                           "selected": old["selected"] if old else int(auto and not barred),
+                           "reviewed": old.get("reviewed", True) if old else (auto or barred),
                            "backed": old.get("backed", {}) if old else {},
                            "remote": {"pc": peer["id"], "root": rroot, "rel": rel_s}}
                 count += 1
@@ -1019,7 +1045,8 @@ def save_state_copy(ds):
         try:
             with gzip.open(Path(d) / pc_folder(d) / "choices.json.gz", "wt", encoding="utf8") as o:
                 json.dump({"pc": PC["name"], "saved": datetime.now().isoformat(timespec="seconds"),
-                           "files": snap, "excludes": SETTINGS["excludes"]}, o, separators=(",", ":"))
+                           "files": snap, "excludes": SETTINGS["excludes"],
+                           "skipped_dirs": META.get("skipped_dirs", [])}, o, separators=(",", ":"))
         except OSError as e:
             log("warn", "backup", f"Could not save choices on {d}: {e}")
 
@@ -1646,6 +1673,7 @@ def select():
                 return jsonify(error="No folder given"), 400
             pre = b["prefix"].rstrip("\\/") + os.sep
             targets = [f for f in INDEX.values() if f["path"].startswith(pre)]
+            set_dir_rule(b["prefix"], not sel)      # skipping a whole folder also covers files added to it later
         elif "dir" in b:
             if not str(b["dir"]).strip():
                 return jsonify(error="No folder given"), 400

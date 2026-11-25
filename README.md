@@ -46,7 +46,8 @@ In this mode the app opens in your browser. Open the app at `localhost` or `127.
    removable are not scanned either.
 2. **Decide what to back up.** Every new file waits in **New files** until you choose. Use a **Quick pick**
    (Office PC, Documents only, Everything) in **Files**, choose by folder, by type or by size, or decide in
-   **New files**. **Selected** lists everything chosen. Skipped files stay skipped.
+   **New files**. **Selected** lists everything chosen. Skipped files stay skipped. Skipping a whole folder (or turning it
+   off) also covers files added to it later: they do not come back to New files. Back the folder up again to lift this.
 3. **Back up now.** Scans, then copies only chosen files that are new or changed to the backup drive, into a
    folder named after the PC. A changed file replaces its old copy; no older versions are kept. A copy is
    written beside the old one and swapped in only when complete.
