@@ -118,6 +118,11 @@ Not covered yet: the internet (use a VPN), files other programs keep open, and s
 
     powershell -ExecutionPolicy Bypass -File installer\build.ps1
 
+The setup wizard is a short three-step flow (Welcome, Installing, Finish) with black and yellow artwork drawn from
+`installer/app.ico`. The images live in `installer/assets/`; after changing the artwork re-run
+`python installer/make_images.py` (needs Pillow) and commit the generated `.bmp` files. The desktop and Start menu
+shortcuts are always created and the install folder is not asked (an existing install keeps its folder).
+
 Needs Node.js, Python 3.12+ and [Inno Setup 6](https://jrsoftware.org/isinfo.php). It builds the frontend,
 packs the app with PyInstaller (`backend/desktop.py`, a native window via pywebview; desktop-only packages are
 in `backend/requirements-desktop.txt`) and writes `installer/out/AlaEhBackup-Setup.exe`.

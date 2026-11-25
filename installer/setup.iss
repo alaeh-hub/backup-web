@@ -1,7 +1,7 @@
-; Inno Setup script: installs AlaEhBackup.exe per-user (no admin rights needed).
+﻿; Inno Setup script: installs AlaEhBackup.exe per-user (no admin rights needed).
 ; ExeName / AppIdGuid can be overridden (/DExeName=... /DAppIdGuid=...) to test an install without touching a real one.
 #ifndef AppVersion
-  #define AppVersion "1.4.0"
+  #define AppVersion "1.5.0"
 #endif
 #ifndef ExeName
   #define ExeName "AlaEhBackup.exe"
@@ -23,6 +23,16 @@ OutputBaseFilename=AlaEhBackup-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+WizardSizePercent=110
+; Black + yellow artwork drawn from app.ico by installer/make_images.py (several sizes for high-DPI screens).
+WizardImageFile=assets\side.bmp,assets\side-125.bmp,assets\side-150.bmp,assets\side-200.bmp
+WizardSmallImageFile=assets\small.bmp,assets\small-125.bmp,assets\small-150.bmp,assets\small-200.bmp
+; Short flow: Welcome -> Installing -> Finish. The folder, Start Menu group and "ready" pages are skipped
+; (an existing install keeps its own folder, so updates still land in the right place).
+DisableDirPage=yes
+DisableProgramGroupPage=yes
+DisableWelcomePage=no
+DisableReadyPage=yes
 SetupIconFile=app.ico
 UninstallDisplayIcon={app}\{#ExeName}
 CloseApplications=yes
@@ -32,10 +42,15 @@ Source: "out\{#ExeName}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Ala Eh! File Backup"; Filename: "{app}\{#ExeName}"
-Name: "{autodesktop}\Ala Eh! File Backup"; Filename: "{app}\{#ExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\Ala Eh! File Backup"; Filename: "{app}\{#ExeName}"
 
-[Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
+[Messages]
+WelcomeLabel1=Welcome to Ala Eh! File Backup
+WelcomeLabel2=Keep your important files safe with a few clicks.%n%nThis will install Ala Eh! File Backup {#AppVersion} on your PC. It takes less than a minute and needs no administrator rights.
+ClickNext=Click Install to get started, or Cancel to exit Setup.
+ButtonNext=&Install
+FinishedHeadingLabel=You're all set!
+FinishedLabel=Ala Eh! File Backup is installed, with shortcuts on your desktop and Start menu.%n%nOpen it now to choose your folders and make your first backup.
 
 [Run]
 ; After a silent self-update (started from inside the app) reopen the app; a normal install shows the checkbox below.
