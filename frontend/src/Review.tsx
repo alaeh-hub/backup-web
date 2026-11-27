@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Icon } from "./ui";
+import { FileIcon, Icon } from "./ui";
+import { PreviewButton } from "./Preview";
+import { SearchBox } from "./SearchBox";
+import { smartFilter } from "./smart";
 import { ask } from "./Dialog";
-import { api, fmt, label, useStored, Explore, FolderRow } from "./api";
+import { api, fmt, label, useStored, Explore, FolderRow, Suggestion } from "./api";
 
 interface Item { kind: "folder" | "file"; path: string; name: string; id?: string; files: number; bytes: number; parent?: string }
 interface Data { items: Item[]; count: number; files: number; bytes: number }
@@ -50,6 +53,7 @@ function Inside({ cwd, setCwd, onChange }: { cwd: string; setCwd: (p: string) =>
             <label className="switch"><input type="checkbox" checked={!!f.selected} onChange={() => sel({ selected: !f.selected, ids: [f.id] }, e => ({ ...e, files: e.files.map(x => x.id === f.id ? { ...x, selected: f.selected ? 0 : 1, review: false } : x) }))} aria-label={"Back up " + f.path} /><span /></label>
             <span className="path" title={f.path}><bdi>{f.path.split(/[\\/]/).pop()}</bdi></span>
             <span className="sub">{f.review ? "To review" : f.selected ? label[f.status] : "Skipped"}</span><strong>{fmt(f.size)}</strong>
+            <PreviewButton id={f.id} ids={ex.files.map(x => x.id)} name={f.path.split(/[\/]/).pop() ?? f.path} />
           </li>
         ))}
       </ul>
@@ -60,8 +64,12 @@ function Inside({ cwd, setCwd, onChange }: { cwd: string; setCwd: (p: string) =>
 export function Review({ onChange, mode = "review" }: { onChange: () => void; mode?: "review" | "selected" }) {
   const chosen = mode === "selected", url = chosen ? "/api/selected" : "/api/review";
   const [cwd, setCwd] = useStored(mode + ".cwd", ""); const [d, setD] = useState<Data | null>(null);
-  const [err, setErr] = useState("");
-  const load = useCallback(async () => { try { setErr(""); setD(await api<Data>(url)); } catch (e) { setErr((e as Error).message); } }, [url]);
+  const [err, setErr] = useState(""); const [q, setQ] = useState("");
+  const [sug, setSug] = useState<{ total: number; items: Suggestion[] } | null>(null);
+  const load = useCallback(async () => {
+    try { setErr(""); setD(await api<Data>(url)); } catch (e) { setErr((e as Error).message); }
+    if (!chosen) api<{ total: number; items: Suggestion[] }>("/api/suggested").then(setSug).catch(() => setSug(null));
+  }, [url, chosen]);
   useEffect(() => { if (!cwd) load(); }, [cwd, load]);
   if (cwd) return <Inside cwd={cwd} setCwd={setCwd} onChange={onChange} />;
   if (err) return <p className="err">Could not load the list: {err}. If you just updated the app, restart py app.py.</p>;
@@ -73,33 +81,69 @@ export function Review({ onChange, mode = "review" }: { onChange: () => void; mo
     try { await api("/api/files/select", "POST", it.kind === "folder" ? { selected, prefix: it.path } : { selected, ids: [it.id] }); onChange(); if (!left && d.count > 1) await load(); }
     catch { await load(); }
   };
+  // Suggested files: the new files most likely to matter. Deciding them also removes them from the list below.
+  const decideSug = async (ids: string[], selected: boolean) => {
+    setSug(x => x && { ...x, items: x.items.filter(i => !ids.includes(i.id)) });
+    try { await api("/api/files/select", "POST", { selected, ids }); onChange(); await load(); } catch { await load(); }
+  };
   const all = async (selected: boolean) => {
     if (chosen && !(await ask("Remove every file from the backup list?", "Remove all"))) return;
     setD(x => x && { ...x, items: [], count: 0, files: 0, bytes: 0 });
     try { await api("/api/files/select", "POST", { selected, filter: chosen ? { status: "all", sel: 1 } : { status: "review" } }); onChange(); } catch { await load(); }
   };
+  const shown = smartFilter(d.items, q, it => it.path, it => ({ size: it.bytes, ext: it.kind === "file" ? (/\.[^.\/]+$/.exec(it.name)?.[0] ?? "") : "" }));
+  const searching = q.trim() !== "";
   return (
     <>
+      <div className="toolbar">
+        <SearchBox saveKey={mode} label={chosen ? "Search chosen files" : "Search new files"} placeholder={chosen ? "Search chosen files and folders" : "Search new files and folders: name, .pdf, >10mb"} value={q} onChange={setQ} />
+      </div>
       <div className="toolbar">
         <span className="sub grow">{chosen
           ? `${d.files.toLocaleString()} files chosen for backup, ${fmt(d.bytes)}. A folder where everything is chosen is one item; open it to look inside.`
           : `${d.files.toLocaleString()} new files, ${fmt(d.bytes)}. A new folder is shown as one item; open it to look inside.`}</span>
-        {!chosen && <button className="primary" onClick={() => all(true)} disabled={!d.count}>Back up all</button>}
-        <button onClick={() => all(false)} disabled={!d.count}>{chosen ? "Remove all" : "Skip all"}</button>
+        {!chosen && <button className="primary" onClick={() => all(true)} disabled={!d.count || searching} title={searching ? "Clear the search to act on everything" : undefined}>Back up all</button>}
+        <button onClick={() => all(false)} disabled={!d.count || searching} title={searching ? "Clear the search to act on everything" : undefined}>{chosen ? "Remove all" : "Skip all"}</button>
       </div>
+      {!chosen && !searching && !!sug?.items.length && (
+        <section className="suggest" aria-label="Suggested new files">
+          <div className="suggest-head">
+            <div><h2>Start with these</h2><p className="sub">The {sug.items.length} new files you most likely use: recently opened or edited, of the kinds people keep, in the places people keep them.</p></div>
+            <button className="primary" onClick={() => decideSug(sug.items.map(i => i.id), true)}>Back up these {sug.items.length}</button>
+          </div>
+          <ul className="rows">
+            {sug.items.map(i => (
+              <li key={i.id} className="line">
+                <FileIcon name={i.name} />
+                <span className="sg-text" title={i.path}>
+                  <span className="sg-head"><b className="sg-name">{i.name}</b><span className="sub sg-where"><bdi>in {i.parent}</bdi></span></span>
+                  <span className="sub">{i.reason}</span>
+                </span>
+                <strong>{fmt(i.bytes)}</strong>
+                <PreviewButton id={i.id} ids={sug.items.map(x => x.id)} name={i.name} />
+                <button className="primary" onClick={() => decideSug([i.id], true)}>Back up</button>
+                <button onClick={() => decideSug([i.id], false)}>Skip</button>
+              </li>
+            ))}
+          </ul>
+          <h2 className="suggest-rest">Everything else that is new</h2>
+        </section>
+      )}
       <ul className="rows">
         <AnimatePresence initial={false} mode="popLayout">
-        {d.items.map(it => (
+        {shown.map(it => (
           <motion.li key={it.kind + it.path} className="line" layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, x: 48 }} transition={{ type: "spring", stiffness: 500, damping: 40 }}>
             {it.kind === "folder"
               ? <button className="linkish grow" title={it.path} onClick={() => setCwd(it.path)}><Icon name="folder" /><span className="path"><bdi>{it.name}</bdi></span></button>
-              : <><Icon name="file" /><span className="path" title={it.path}><bdi>{it.name} <span className="sub">in {it.parent}</span></bdi></span></>}
+              : <><FileIcon name={it.name} /><span className="path" title={it.path}><bdi>{it.name} <span className="sub">in {it.parent}</span></bdi></span></>}
             <span className="sub">{it.kind === "folder" ? `${it.files.toLocaleString()} files` : "file"}</span><strong>{fmt(it.bytes)}</strong>
+            {it.kind === "file" && it.id && <PreviewButton id={it.id} ids={shown.filter(x => x.kind === "file" && x.id).map(x => x.id!)} name={it.name} />}
             {!chosen && <button className="primary" onClick={() => decide(it, true)}>Back up</button>}
             <button onClick={() => decide(it, false)}>{chosen ? "Remove" : "Skip"}</button>
           </motion.li>
         ))}
         </AnimatePresence>
+        {searching && !!d.count && !shown.length && <li className="sub">Nothing matches “{q}”. Try fewer words.</li>}
         {!d.count && <li className="sub">{chosen ? "Nothing is chosen for backup yet. Pick files in New files or use a Quick pick in Files." : "Nothing new to review. New files will appear here after you scan."}</li>}
         {d.count > d.items.length && <li className="sub">Showing the {d.items.length} biggest of {d.count.toLocaleString()} items. Decide these and the rest will appear.</li>}
       </ul>

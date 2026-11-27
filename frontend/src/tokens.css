@@ -1,17 +1,34 @@
 :root {
   --space-3xs: 2px; --space-2xs: 4px; --space-xs: 8px; --space-sm: 12px; --space-md: 16px; --space-lg: 24px; --space-xl: 40px; --space-2xl: 64px; --space-3xl: 96px; --space-4xl: 144px;
-  --text-xs: 0.75rem; --text-sm: 0.875rem; --text-md: 1rem; --text-lg: 1.2rem; --text-xl: 1.44rem; --text-2xl: 1.728rem; --text-3xl: 2.074rem;
+  --text-xs: 0.75rem; --text-sm: 0.8125rem; --text-md: 0.9375rem; --text-lg: 1.2rem; --text-xl: 1.44rem; --text-2xl: 1.728rem; --text-3xl: 2.074rem;
   --text-display-s: 1.44rem; --text-display: 1.728rem; --text-section: 1.2rem; --text-title: 1rem; --text-lead: 1rem;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1); --ease-in: cubic-bezier(0.7, 0, 0.84, 0); --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
   --dur-micro: 120ms; --dur-short: 220ms; --dur-long: 420ms;
-  --color-error: oklch(70% 0.19 27); --color-success: oklch(79% 0.14 152); --color-review: oklch(77% 0.16 55); --color-skip: oklch(32% 0 0); --color-scroll: oklch(30% 0 0);
-  --container: 1120px; --gutter: 32px; --side: 15.5rem; --gap-columns: 32px; --section-gap-s: 120px; --section-gap: 144px; --section-gap-l: 176px;
+  --color-error: oklch(70% 0.19 27); --color-success: oklch(79% 0.14 152); --color-review: oklch(77% 0.16 55); --color-review-text: var(--color-review); --color-skip: oklch(32% 0 0); --color-scroll: oklch(30% 0 0);
+  --container: 1120px; --gutter: 32px; --side: 17rem; --gap-columns: 32px; --section-gap-s: 120px; --section-gap: 144px; --section-gap-l: 176px;
   --z-base: 1; --z-raised: 10; --z-dropdown: 100; --z-sticky: 200; --z-sticky-nav: 300; --z-modal: 400; --z-toast: 500; --z-tooltip: 600;
   --color-paper: oklch(0% 0 0); --color-paper-2: oklch(9% 0 0); --color-paper-3: oklch(15% 0 0);
   --color-ink: oklch(98% 0 0); --color-ink-2: oklch(84% 0 0); --color-muted: oklch(68% 0 0);
   --color-rule: oklch(22% 0 0);
   --color-accent: oklch(87.5% 0.18 98); --color-accent-ink: oklch(21% 0.04 90); --color-focus: oklch(87.5% 0.18 98);
-  --font-display: "Bricolage Grotesque Variable", "Bricolage Grotesque", "Arial Black", sans-serif; --font-body: "Hanken Grotesk Variable", "Hanken Grotesk", system-ui, sans-serif; --font-outlier: var(--font-body);
+  --color-accent-text: var(--color-accent); --color-accent-line: var(--color-accent);   /* on black the yellow is also the text, icon and line colour */
+  --font-display: "Bricolage Grotesque Variable", "Bricolage Grotesque", "Arial Black", sans-serif; --font-body: "Hanken Grotesk Variable", "Hanken Grotesk", system-ui, sans-serif; --font-outlier: var(--font-body); --font-serif: Georgia, "Times New Roman", serif; --font-mono: ui-monospace, "Cascadia Mono", Consolas, "Courier New", monospace;
   --radius-card: 0; --radius-ctl: 0; --radius-pill: 0; --rule-hair: 1px; --shadow-card: none;
+  --sheet: oklch(99% 0.003 95); --sheet-ink: oklch(22% 0.01 95); --sheet-muted: oklch(48% 0.01 95); --sheet-rule: oklch(78% 0.01 95);
   --tracking-display: -0.02em;
+  --kind-pdf: oklch(72% 0.17 27); --kind-doc: oklch(74% 0.13 255); --kind-xls: oklch(76% 0.15 152); --kind-ppt: oklch(76% 0.15 55); --kind-zip: oklch(76% 0.11 85);
+  --kind-img: oklch(75% 0.14 315); --kind-vid: oklch(73% 0.17 355); --kind-aud: oklch(76% 0.11 195); --kind-code: oklch(76% 0.04 265); --kind-exe: oklch(72% 0.08 20);
+}
+
+/* Light mode: black and yellow like dark mode, inverted. Yellow is a fill (buttons, bars, badges) with black on it; black carries text, icons and thin lines. */
+html[data-mode="light"] {
+  --color-paper: oklch(98.6% 0.005 95); --color-paper-2: oklch(96% 0.006 95); --color-paper-3: oklch(92.5% 0.007 95);
+  --color-ink: oklch(19% 0.01 95); --color-ink-2: oklch(34% 0.01 95); --color-muted: oklch(47% 0.01 95);
+  --color-rule: oklch(86% 0.008 95);
+  --color-accent: oklch(87.5% 0.18 98); --color-accent-ink: oklch(19% 0.01 95); --color-focus: oklch(19% 0.01 95);
+  --color-accent-text: oklch(19% 0.01 95); --color-accent-line: oklch(19% 0.01 95);   /* yellow cannot be read on white: fills stay yellow with black on them, text, icons and lines go black */
+  --color-error: oklch(50% 0.2 27); --color-success: oklch(46% 0.14 152); --color-review: oklch(70% 0.18 52); --color-review-text: oklch(44% 0.13 48);
+  --color-skip: oklch(84% 0.006 95); --color-scroll: oklch(76% 0.008 95);
+  --kind-pdf: oklch(50% 0.2 27); --kind-doc: oklch(49% 0.16 255); --kind-xls: oklch(46% 0.14 152); --kind-ppt: oklch(51% 0.15 55); --kind-zip: oklch(48% 0.1 85);
+  --kind-img: oklch(48% 0.17 315); --kind-vid: oklch(49% 0.19 355); --kind-aud: oklch(46% 0.1 195); --kind-code: oklch(40% 0.05 265); --kind-exe: oklch(46% 0.1 20);
 }

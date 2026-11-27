@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, fmt, BigDir, FileRow } from "./api";
-import { Icon } from "./ui";
+import { FileIcon, Icon } from "./ui";
+import { PreviewButton } from "./Preview";
 
 export function Biggest({ onChange }: { onChange: () => void }) {
   const [d, setD] = useState<{ folders: BigDir[]; files: FileRow[] } | null>(null);
@@ -36,7 +37,8 @@ export function Biggest({ onChange }: { onChange: () => void }) {
         {d.files.map(f => (
           <li key={f.id} className="line">
             <label className="switch"><input type="checkbox" checked={!!f.selected} onChange={() => file(f)} aria-label={"Back up " + f.path} /><span /></label>
-            <Icon name="file" /><span className="path" title={f.path}><bdi>{f.path}</bdi></span><strong>{fmt(f.size)}</strong>
+            <FileIcon name={f.path} /><span className="path" title={f.path}><bdi>{f.path}</bdi></span><strong>{fmt(f.size)}</strong>
+            <PreviewButton id={f.id} ids={d.files.map(x => x.id)} name={f.path} />
           </li>
         ))}
       </ul>

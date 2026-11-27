@@ -1,10 +1,21 @@
-import { ReactNode, useId } from "react";
+import { ReactNode, useEffect, useId } from "react";
+import { modalOpen, typingIn } from "./keys";
+import { AddedMark } from "./ui";
 
 /** One entry of a panel's section index: its name, and a short live fact about it (how many, on or off). */
 export interface PanelItem { key: string; label: string; hint?: string }
 
 /** A screen split into sections: an index on the left (a strip across the top on a narrow screen) and one section at a time. */
 export function Panel({ items, current, onChange, label, children }: { items: PanelItem[]; current: string; onChange: (key: string) => void; label: string; children: ReactNode }) {
+  useEffect(() => {                                       // [ and ] step through the sections
+    const key = (e: KeyboardEvent) => {
+      if ((e.key !== "[" && e.key !== "]") || e.ctrlKey || e.metaKey || e.altKey || typingIn(e.target) || modalOpen()) return;
+      const at = items.findIndex(i => i.key === current), next = items[at + (e.key === "]" ? 1 : -1)];
+      if (next) { e.preventDefault(); onChange(next.key); }
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [items, current, onChange]);
   return (
     <div className="panel">
       <nav className="panel-nav" aria-label={label}>
@@ -39,10 +50,10 @@ export function Cluster({ title, children }: { title?: string; children: ReactNo
 }
 
 /** One setting: what it is and what it does on the left, the control on the right (or underneath, for a wide one). */
-export function Row({ title, desc, wide, off, children }: { title: string; desc?: ReactNode; wide?: boolean; off?: boolean; children?: ReactNode }) {
+export function Row({ title, desc, wide, off, on, children }: { title: string; desc?: ReactNode; wide?: boolean; off?: boolean; on?: boolean; children?: ReactNode }) {
   return (
-    <div className={"srow" + (wide ? " wide" : "") + (off ? " off" : "")}>
-      <div className="srow-text"><b>{title}</b>{desc && <span className="sub">{desc}</span>}</div>
+    <div className={"srow" + (wide ? " wide" : "") + (off ? " off" : "") + (on ? " on" : "")}>
+      <div className="srow-text"><b>{on && <AddedMark />}{title}</b>{desc && <span className="sub">{desc}</span>}</div>
       {children && <div className="srow-ctl">{children}</div>}
     </div>
   );

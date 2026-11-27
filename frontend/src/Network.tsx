@@ -4,6 +4,8 @@ import { ask } from "./Dialog";
 import { Cluster, Group, Panel, Row, Switch } from "./Panel";
 import { PathList } from "./PathList";
 import { Select } from "./Select";
+import { SearchBox } from "./SearchBox";
+import { smartFilter } from "./smart";
 
 interface Agent {
   running: boolean; port: number | null; addresses: string[]; name: string; roots: { label: string; path: string }[]; auto_off_hours: number;
@@ -78,7 +80,7 @@ function Peers({ peers, reload, checking }: { peers: Peer[] | null; reload: (che
                   <div className="peer-roots">
                     {rootErr && <p className="err">{rootErr}</p>}
                     {!rootErr && !roots.length && <p className="sub">Asking {p.name}…</p>}
-                    {roots.map(r => <Row key={r.label} title={r.label} desc={r.chosen ? "Backed up" : "Not backed up"}><Switch checked={r.chosen} onChange={on => toggle(p.id, r.label, on)} label={`Back up ${r.label} from ${p.name}`} /></Row>)}
+                    {roots.map(r => <Row key={r.label} title={r.label} on={r.chosen} desc={r.chosen ? "Backed up" : "Not backed up"}><Switch checked={r.chosen} onChange={on => toggle(p.id, r.label, on)} label={`Back up ${r.label} from ${p.name}`} /></Row>)}
                     {roots.length > 0 && <p className="sub">Then open New files to choose what to keep, and click Back up now.</p>}
                   </div>
                 )}
@@ -169,13 +171,17 @@ function Share({ a, act, err }: { a: Agent | null; act: (path: string, body?: un
 
 /** Every request a paired PC made to this PC, newest first. */
 function Activity({ a }: { a: Agent | null }) {
+  const [q, setQ] = useState("");
+  const rows = a ? smartFilter(a.log, q, l => `${l.who} ${l.what} ${l.path} ${l.at} ${l.status}`) : [];
   return (
     <Group title="Activity" lead="What paired PCs read from this PC, newest first. Only while sharing is on.">
       {!a && <p className="sub">Loading…</p>}
       {a && !a.log.length && <div className="blank"><b>Nothing yet.</b><span className="sub">Requests from a paired PC show up here.</span></div>}
-      {a && a.log.length > 0 && (
+      {a && a.log.length > 0 && <div className="toolbar"><SearchBox label="Search activity" placeholder="Search by PC, file or time" value={q} onChange={setQ} /></div>}
+      {a && a.log.length > 0 && !rows.length && <p className="sub">Nothing matches “{q}”.</p>}
+      {a && rows.length > 0 && (
         <ul className="rows log">
-          {a.log.map((l, i) => (
+          {rows.map((l, i) => (
             <li key={i} className="line"><span className="sub num">{l.at}</span><span className="grow"><b>{l.who}</b> {l.what} <bdi className="sub">{l.path}</bdi></span><span className={"tag " + (l.status < 300 ? "backed_up" : "lv-warn")}>{l.status}</span></li>
           ))}
         </ul>

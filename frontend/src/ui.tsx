@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { animate, stagger } from "animejs";
+import kinds from "./kinds.json";
 
 export const reduced = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -16,10 +17,20 @@ const P: Record<string, string> = {
   backup: "M12 16V5M7.5 9.5L12 5l4.5 4.5M5 15v3a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3",
   file: "M6 3h8l4 4v14H6zM14 3v4h4",
   cancel: "M6 6l12 12M18 6L6 18",
+  bell: "M6 9a6 6 0 0 1 12 0c0 6 2.5 7.5 2.5 7.5h-17S6 15 6 9zM10 20a2 2 0 0 0 4 0",
+  sun: "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4",
+  moon: "M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z",
+  search: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4",
   drive: "M4 14l2-8h12l2 8M4 14v4h16v-4M4 14h16M16.5 16.5h.01",
   download: "M12 4v11M7.5 10.5L12 15l4.5-4.5M5 15v3a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3",
   network: "M12 4v4M5 14h14M5 14v4M19 14v4M12 8v6M9 4h6v4H9zM2 18h6v3H2zM16 18h6v3h-6z",
   chevron: "M6 9l6 6 6-6",
+  keyboard: "M3 7h18a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1zM6 10.5h.01M9 10.5h.01M12 10.5h.01M15 10.5h.01M18 10.5h.01M7 14h10",
+  expand: "M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5",
+  play: "M8 5.5v13l10.5-6.5z",
+  pause: "M8.5 5.5v13M15.5 5.5v13",
+  volume: "M4 10v4h4l5 4V6l-5 4zM16.5 9a4.2 4.2 0 0 1 0 6M19 6.5a8 8 0 0 1 0 11",
+  eye: "M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12zM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z",
 };
 
 /** A small outlined icon, drawn inline so it follows the text colour. */
@@ -29,6 +40,23 @@ export function Icon({ name, className = "ico" }: { name: string; className?: st
       <path d={P[name] ?? P.file} />
     </svg>
   );
+}
+
+const KINDS: Record<string, string> = {};            // extension -> kind, from the same list smart search uses (kinds.json)
+for (const [kind, exts] of Object.entries(kinds.kinds as Record<string, string[]>)) for (const e of exts) KINDS[e] = kind;
+
+/** The mark for something already added or switched on: a check in a solid accent square. Never colour alone, so it also reads without the colour. */
+export function AddedMark() {
+  return <span className="mark" aria-hidden="true"><Icon name="check" className="mk-ico" /></span>;
+}
+
+/** A small sheet of paper in the file kind's colour with its extension on it (pdf, docx, jpg...), so the kind of file is
+ *  clear at a glance. A name without an extension gets the plain file icon. */
+export function FileIcon({ name }: { name: string }) {
+  const m = /\.([A-Za-z0-9]{1,6})$/.exec(name);
+  if (!m) return <Icon name="file" />;
+  const ext = m[1].toLowerCase();
+  return <span className="fico" data-k={KINDS[ext] ?? "other"} title={ext + " file"} aria-hidden="true">{ext.slice(0, 4)}</span>;
 }
 
 /** Children rise in one after another when a screen opens (anime.js). */
@@ -68,6 +96,21 @@ export function useGrow(selector: string, axis: "x" | "y", deps: unknown[]) {
     const items = el.querySelectorAll(selector);
     if (!items.length) return;
     const a = animate(items, { [axis === "x" ? "scaleX" : "scaleY"]: [0, 1], delay: stagger(70, { start: 150 }), duration: 900, ease: "outExpo" });
+    return () => { a.revert(); };
+  }, deps); // eslint-disable-line react-hooks/exhaustive-deps
+  return ref;
+}
+
+/** Items inside a container rise in one after another when it appears (anime.js). Only the first `max` are animated, so a
+ *  long table never costs more than a moment; with reduced motion nothing moves. Returns the ref to put on the container. */
+export function useRise(selector: string, deps: unknown[], opts: { max?: number; step?: number; lift?: number } = {}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || reduced()) return;
+    const items = Array.from(el.querySelectorAll(selector)).slice(0, opts.max ?? 40);
+    if (!items.length) return;
+    const a = animate(items, { opacity: [0, 1], translateY: [opts.lift ?? 10, 0], delay: stagger(opts.step ?? 16), duration: 460, ease: "outExpo" });
     return () => { a.revert(); };
   }, deps); // eslint-disable-line react-hooks/exhaustive-deps
   return ref;

@@ -66,6 +66,32 @@ Other parts:
 - **Scheduled scan** (Settings) scans on chosen days and times so new files are waiting for review. It never
   copies anything by itself.
 - Optional webhook message (Slack, Discord or any JSON endpoint) after scheduled scans and backups.
+- **Backup health:** Overview shows when the copies on the drive were last checked (Verify finds missing or damaged
+  copies and queues them to be copied again). Settings > Backup can keep older versions of a changed file (0 = off);
+  Restore then lists them under "Older versions" and puts the chosen one next to the file, never over it.
+- **Warnings:** the bell at the top shows a drive that is not plugged in, a drive that is almost full or too small for what
+  is waiting, no backup for N days, a failed run, and a failed check. The thresholds are in Settings > Alerts; each new
+  warning is also sent to the webhook once a day.
+- **Preview:** every file row has an eye button that opens a preview window (arrow keys step through the list, Esc closes). Images, PDFs,
+  video and audio play in the window; text and code show their start; CSV, Excel and OpenDocument sheets show as tables; Word, PowerPoint,
+  RTF and OpenDocument files show their text (a Word .docx is drawn as a page: its formatting, headings, lists, tables and pictures); zip and tar files list what is inside; old Office files show the text
+  found in them; a file that is not what its name says (an HTML table saved as .xls, RTF saved as .doc) is shown as what it really is; anything else shows its first bytes, so every file shows something. A file is read from the PC, or from a connected
+  backup drive when it is gone from the PC (compressed copies are unpacked on the fly), or live from the other PC. Previews only
+  read: nothing is run, HTML is shown as text, SVG is sandboxed, and every read is size-limited.
+- **Keyboard and mouse:** press `?` for the full list. Everywhere: `1` to `0` or `g` then a letter go to a screen, `Alt+Left` and `Alt+Right` (or the mouse back and
+  forward buttons) walk back and forward through the screens, `/` or `Ctrl+K` searches, `Ctrl+Enter` backs up now, `Ctrl+Shift+S` scans, `r` refreshes, `t` switches
+  light and dark. In lists, `j` and `k` move a cursor, `Enter` opens the preview or the folder, `x` chooses or skips the row. In the preview, the arrow keys (or the mouse
+  back and forward buttons) step through files, `Enter` backs a file up and moves on, `s` skips it, `f` is full screen, `i` hides the details, `c` copies the path,
+  `+ - 0 r` zoom and turn a picture, `Space j k l m [ ]` and the arrows control audio and video, and `Esc` (or a middle click) closes it. Dialogs take `y`, `n` and `Esc`;
+  the folder browser takes the arrow keys and `Backspace`; `[` and `]` change section in Settings and Other PCs.
+- **Search:** every list takes smart search (words in any order, "phrases", -exclude, .pdf, `type:spreadsheet` (or documents, images, videos, audio, archives, code...), >10mb, typo-tolerant; `level:error`
+  in the log). Searches can be saved as chips. Settings > App has the dark/light theme (also a button at the top) and text size.
+- **One drive for many PCs:** each PC keeps its own folder on the drive. Before a backup writes a file, it looks in the other
+  PCs' folders for a copy with the same content (SHA-256). If one exists it links to it (NTFS hard link) instead of writing
+  it again, so the same document is stored once. Drives that cannot link (FAT, exFAT) get a normal copy. Changing a file
+  later never alters the other PC's copy. The scan also recognises such files (same name, size and date as a copy another
+  PC stored) and adds them to the backup list instead of showing them in New files. Settings > Backup > "Share copies with
+  other PCs" turns this off.
 
 ## Back up another PC over your network
 
@@ -76,7 +102,13 @@ does both jobs; nothing special is installed.
 2. **On A:** open **Other PCs**, click **Find PCs on this network** (or type B's address), enter the 6-digit code and
    **Pair**. Tick the folders of B to back up.
 3. **Back up as usual** on A: B's files appear in New files / Files, and **Back up now** copies them to A's drive under
-   `<A's folder>/Remote PCs/<B's name (short id)>/<folder>` (the short id keeps two PCs with the same name apart). Verify and Restore work like any other file (restore asks for a folder).
+   `<B's own folder>/<folder>` (every PC has exactly one folder on a drive, found by the `pc-id.json` inside it, so two PCs
+   with the same name never share one). Verify and Restore work like any other file (restore asks for a folder).
+4. **Use any PC to back up any PC.** Later, B can back itself up (or A, or C) to the same drive: B's files are already in
+   B's folder, so they are recognised, shown as backed up, and only the new or changed files are copied. A folder that
+   has a different name on the two PCs is still recognised by its content (SHA-256), so nothing is stored twice. The
+   **Devices** tab shows one backup per PC and who backed it up over the network. Backups made by versions 1.3 to 1.5
+   (under `Remote PCs/...` in the controller's folder) are moved into the right PC folder by the next backup.
 
 How it stays safe:
 
