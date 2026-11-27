@@ -1,5 +1,6 @@
 import { api, fmt, Stats } from "./api";
-import { CountUp, Icon, useGrow } from "./ui";
+import { CountUp, FileIcon, Icon, useGrow } from "./ui";
+import { PreviewButton } from "./Preview";
 import { tell } from "./Dialog";
 
 type Go = (t: "settings" | "files" | "review" | "selected") => void;
@@ -71,7 +72,12 @@ export function Dashboard({ stats, busy, go, onJob }: { stats: Stats | null; bus
             })}
             {!stats.destinations.length && <li className="sub">No backup drive yet. Add one in Settings.</li>}
           </ul>
-          <div><button onClick={verify} disabled={busy}>Verify backed up copies</button></div>
+          <div className="health">
+            <span className={stats.last_verify?.bad ? "warn" : "sub"}>{stats.last_verify
+              ? `Last check ${stats.last_verify.at}: ${stats.last_verify.ok.toLocaleString()} copies fine${stats.last_verify.bad ? `, ${stats.last_verify.bad.toLocaleString()} missing or damaged` : ""}.`
+              : "The copies on the drive have not been checked yet."}</span>
+            <button onClick={verify} disabled={busy}>Check backed up copies</button>
+          </div>
         </section>
         <section className="block">
           <h2>Backed up per day</h2>
@@ -93,7 +99,7 @@ export function Dashboard({ stats, busy, go, onJob }: { stats: Stats | null; bus
         </section>
         <section className="block">
           <h2>Largest files</h2>
-          <ul className="rows">{stats.largest_files.map(f => <li key={f.path} className="line"><Icon name="file" /><span className="path" title={f.path}><bdi>{f.path}</bdi></span><strong>{fmt(f.size)}</strong></li>)}</ul>
+          <ul className="rows">{stats.largest_files.map(f => <li key={f.path} className="line"><FileIcon name={f.path} /><span className="path" title={f.path}><bdi>{f.path}</bdi></span><strong>{fmt(f.size)}</strong><PreviewButton id={f.id} ids={stats.largest_files.map(x => x.id)} name={f.path} /></li>)}</ul>
         </section>
       </div>
     </>

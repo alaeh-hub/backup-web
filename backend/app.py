@@ -20,8 +20,11 @@ from pathlib import Path
 import agent as agent_mod
 import pki
 import remote
+import smartsearch
+import drivecopies
+import preview
 import updater
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 
 ON_VERCEL = bool(os.environ.get("VERCEL"))      # serverless: only /tmp is writable, and it is not persistent
 DATA = Path(os.environ.get("BACKUP_DATA_DIR") or (Path("/tmp") / ".ala-eh-backup" if ON_VERCEL else Path.home() / ".ala-eh-backup"))
@@ -63,6 +66,9 @@ DEFAULTS = {
     "new_files": "review",
     "max_size_mb": 0,
     "versions": 0,          # no older copies: a changed file simply replaces its backup
+    "keep_versions": 0,     # older copies of a changed file to keep on the drive (0 = the new copy replaces the old one)
+    "alert_low_space_pct": 10,   # warn when a backup drive has less than this percent free (0 = off)
+    "alert_stale_days": 7,       # warn when nothing was backed up for this many days (0 = off)
     "compress": False,
     "schedule": {"enabled": False, "time": "22:00", "days": [0, 1, 2, 3, 4, 5, 6]},
     "auto_scan_minutes": 0,
@@ -70,6 +76,7 @@ DEFAULTS = {
     "remote_sources": [],   # folders of other paired PCs to back up: [{"pc": id, "root": label}]
     "deep_check": False,    # also compare contents of files whose size and date did not change (slower)
     "update_check": True,   # installed app: look for a newer release on GitHub
+    "reuse_drive_copies": True,   # a file another PC already stored on the shared drive is linked, not written again
 }
 SETTINGS = {**DEFAULTS, **read_json("settings.json", {})}
 SETTINGS["versions"] = 0           # an older setting of 3 is ignored: the new copy replaces the old one
@@ -195,19 +202,26 @@ def read_logs(level="", q="", limit=300):
         lines = (DATA / "logs.jsonl").read_text("utf8").splitlines()
     except OSError:
         return out
-    q = q.lower()
-    for ln in reversed(lines):
-        try:
-            r = json.loads(ln)
-        except ValueError:
-            continue
-        if level and r["level"] != level:
-            continue
-        if q and q not in r["message"].lower() and q not in r["action"]:
-            continue
-        out.append(r)
-        if len(out) >= limit:
+    sq = smartsearch.Query(q)
+    for fuzzy in (False, True):                            # a second pass forgives typos, only if the first found nothing
+        if fuzzy and (out or not sq.can_fuzzy):
             break
+        for ln in reversed(lines):
+            try:
+                r = json.loads(ln)
+            except ValueError:
+                continue
+            if level and r["level"] != level:
+                continue
+            if sq.fields.get("level") and r["level"] != sq.fields["level"].replace("warning", "warn"):
+                continue
+            if sq.fields.get("action") and sq.fields["action"] not in r["action"].lower():
+                continue
+            if not sq.empty and not sq.match(r["action"] + " " + r["message"], fuzzy=fuzzy):
+                continue
+            out.append(r)
+            if len(out) >= limit:
+                break
     return out
 
 
@@ -321,6 +335,42 @@ def cat_of(path):
     return TYPE_EXT.get(os.path.splitext(path)[1].lower(), "other")
 
 
+# How much a file probably matters to its owner, worked out from what the PC already knows about it. It decides which new
+# files are suggested first and which are copied first. Nothing here reads a file's content.
+_KIND_POINTS = {"documents": 25, "spreadsheets": 25, "presentations": 22, "design": 22, "email": 20, "databases": 18,
+                "pictures": 15, "videos": 8, "music": 5, "archives": 3, "installers": -10, "other": 0}
+_PLACES = (("documents", 15, "In Documents"), ("desktop", 15, "On the Desktop"), ("pictures", 10, "In Pictures"),
+           ("onedrive", 10, "In OneDrive"), ("downloads", 3, ""))
+
+
+def importance(f, now=None):
+    """(score, reason): recently used files of the kinds people keep, in the places people keep them, score highest."""
+    now = now or time.time()
+    mt, at = f.get("mtime") or 0, f.get("atime") or 0
+    used = max(mt, at) if at - mt > 3600 else mt                    # an open that is later than the last edit counts too
+    days = max(0.0, (now - used) / 86400)
+    pts = 50 if days < 1 else 42 if days < 7 else 32 if days < 30 else 20 if days < 90 else 8 if days < 365 else 0
+    verb = "Opened" if used != mt else "Edited"
+    when = ("today" if days < 1 else "this week" if days < 7 else "this month" if days < 30 else "in the last 3 months" if days < 90
+            else "this year" if days < 365 else "")
+    kind = cat_of(f["path"])
+    pts += _KIND_POINTS.get(kind, 0)
+    low = f["path"].lower().replace("\\", "/")
+    place = ""
+    for key, p_, text in _PLACES:
+        if f"/{key}/" in low:
+            pts += p_
+            place = text
+            break
+    size = f.get("size") or 0
+    if size > 2e9:
+        pts -= 10
+    elif size < 1024:
+        pts -= 5
+    bits = [f"{verb} {when}" if when else "", CATEGORIES[kind][0] if kind != "other" else "", place]
+    return pts, ", ".join(b for b in bits if b)
+
+
 def preset_wants(preset, f):
     if preset.get("all"):
         return True
@@ -400,30 +450,156 @@ def read_json_at(path):
         return None
 
 
-def pc_folder(dest, create=False):
-    """Folder name for this PC on `dest`. A pc-id.json inside tells PCs apart even if two share a name."""
-    if dest in _PCF:
-        return _PCF[dest]
-    for cand in (PC_NAME, f"{PC_NAME}-{PC['id'][:6]}"):
+def _folder_name(name):
+    base = re.sub(r'[<>:"/\\|?*\s]+', "_", str(name)).strip("._") or "PC"
+    return "_" + base if base.split(".")[0].upper() in RESERVED else base
+
+
+def write_json_at(path, obj):
+    tmp = Path(str(path) + ".tmp")
+    tmp.write_text(json.dumps(obj, indent=1), "utf8")
+    os.replace(tmp, path)
+
+
+def folder_for(dest, pid, name, user="", create=False):
+    """The folder on `dest` that belongs to the PC with this id. One PC has exactly one folder on a drive, whichever PC
+    wrote into it: the pc-id.json inside says whose it is, so a PC is found again even if it was renamed, and two PCs
+    with the same name never share a folder."""
+    pid = str(pid)
+    key = dest if pid == PC["id"] else (dest, pid)
+    hit = _PCF.get(key)
+    if isinstance(hit, str):
+        return hit
+    if isinstance(hit, tuple) and not create:
+        return hit[0]                                 # a folder that does not exist yet: remembered so a scan does not look again
+    try:
+        kids = [e for e in os.scandir(dest) if not e.name.startswith(".")]
+    except OSError:
+        kids = []
+    for e in kids:
+        try:
+            if not e.is_dir(follow_symlinks=False):
+                continue
+        except OSError:
+            continue
+        idf = Path(e.path) / "pc-id.json"
+        data = read_json_at(idf)
+        if isinstance(data, dict) and data.get("id") == pid:
+            if create and (data.get("name") != str(name) or (user and data.get("user") != user)):
+                data["name"] = str(name)
+                if user:
+                    data["user"] = user
+                try:
+                    write_json_at(idf, data)           # keep the name current if the PC was renamed
+                except OSError:
+                    pass
+            _PCF[key] = e.name
+            return e.name
+    base = _folder_name(name)
+    for cand in (base, f"{base}-{pid[:6]}"):
         idf = Path(dest) / cand / "pc-id.json"
-        data = read_json_at(idf) if idf.exists() else None
-        if not idf.exists():
-            if not create:
-                return cand
-            idf.parent.mkdir(parents=True, exist_ok=True)
-            idf.write_text(json.dumps({"id": PC["id"], "name": PC["name"], "user": os.environ.get("USERNAME", ""),
-                                       "first_backup": datetime.now().isoformat(timespec="seconds")}, indent=1), "utf8")
-            _PCF[dest] = cand
+        if idf.exists():
+            continue                                  # another PC's folder
+        if not create:
+            _PCF[key] = (cand,)
             return cand
-        if isinstance(data, dict) and data.get("id") == PC["id"]:
-            _PCF[dest] = cand
-            return cand
-    raise RuntimeError(f"Folder name clash for {PC_NAME} on {dest}")
+        idf.parent.mkdir(parents=True, exist_ok=True)
+        write_json_at(idf, {"id": pid, "name": str(name), "user": user,
+                            "first_backup": datetime.now().isoformat(timespec="seconds")})
+        _PCF[key] = cand
+        return cand
+    raise RuntimeError(f"Folder name clash for {name} on {dest}")
 
 
-def target_of(dest, f, gz):
-    p = Path(dest) / pc_folder(dest) / f["label"] / f["rel"]
+def pc_folder(dest, create=False):
+    """Folder name for this PC on `dest`."""
+    return folder_for(dest, PC["id"], PC["name"], os.environ.get("USERNAME", ""), create)
+
+
+def peer_folder(dest, r, create=False):
+    """Folder on `dest` for another PC that this PC backs up over the network (`r` is the file's `remote` record). It is
+    that PC's own folder, the same one it uses when it backs itself up, so its files are one backup however it is made."""
+    pid = str(r["pc"])
+    return folder_for(dest, pid, (PEERS.get(pid) or {}).get("name") or r.get("name") or pid[:6], "", create)
+
+
+def is_legacy_remote(f):
+    """Versions 1.3 to 1.5 filed another PC's files under this PC's folder: Remote PCs / name (id) / folder."""
+    return bool(f.get("remote")) and len(Path(f["label"]).parts) >= 3 and Path(f["label"]).parts[0] == "Remote PCs"
+
+
+def folder_of(dest, f, create=False):
+    """The PC folder a file is stored in: its own PC's folder, wherever the backup is made from."""
+    r = f.get("remote")
+    if r and not is_legacy_remote(f):
+        return peer_folder(dest, r, create)
+    return pc_folder(dest, create)
+
+
+def target_of(dest, f, gz, create=False):
+    p = Path(dest) / folder_of(dest, f, create) / f["label"] / f["rel"]
     return p.with_name(p.name + ".gz") if gz else p
+
+
+def foreign_folder(dest, f):
+    """True when the file belongs to another PC, so this PC is writing into that PC's folder."""
+    return bool(f.get("remote")) and not is_legacy_remote(f)
+
+
+_TOUCHED = {}
+
+
+def stamp_folder(dest, f):
+    """Record on the drive that this PC backed up another PC's folder: when, and by whom. The first time in a run it
+    also marks the folder as written by someone else, which makes that PC look at it when it checks for stored copies."""
+    if not foreign_folder(dest, f):
+        return
+    folder = folder_of(dest, f)
+    key = (dest, folder)
+    if key in _TOUCHED:
+        return
+    _TOUCHED[key] = True
+    idf = Path(dest) / folder / "pc-id.json"
+    data = read_json_at(idf)
+    if not isinstance(data, dict):
+        return
+    by = [x for x in data.get("backed_up_by", []) if isinstance(x, str)]
+    if PC["name"] not in by:
+        by.append(PC["name"])
+    data["backed_up_by"] = by
+    data["last_backup"] = datetime.now().isoformat(sep=" ", timespec="seconds")
+    try:
+        write_json_at(idf, data)
+    except OSError:
+        pass
+
+
+def written_by_others(dest):
+    """True when another PC has also been writing into this PC's folder on `dest`."""
+    try:
+        data = read_json_at(Path(dest) / pc_folder(dest) / "pc-id.json")
+    except RuntimeError:
+        return False
+    return bool(isinstance(data, dict) and data.get("backed_up_by"))
+
+
+def make_catalog(dest):
+    """What other PCs stored on `dest`. This PC's own folder counts too once another PC has written into it."""
+    return drivecopies.Catalog(dest, pc_folder(dest), check_cancel, include_own=written_by_others(dest))
+
+
+def already_stored(dest, f, h):
+    """The copy that is already at this file's place on `dest` has exactly this content: it was put there earlier,
+    by this PC or by another PC that backed this PC up. Nothing needs writing; the app just records it."""
+    p, gz = find_backup(dest, f)
+    if p is None:
+        return False
+    try:
+        if (drivecopies._gz_size(str(p)) if gz else p.stat().st_size) != (f["size"] & 0xFFFFFFFF if gz else f["size"]):
+            return False
+    except OSError:
+        return False
+    return drivecopies._hash(str(p), gz) == h
 
 
 def find_backup(dest, f):
@@ -439,7 +615,7 @@ TS = re.compile(r"\d{8}-\d{6}")
 
 
 def vdir(dest, f):
-    return Path(dest) / ".versions" / pc_folder(dest) / f["label"] / Path(f["rel"]).parent
+    return Path(dest) / ".versions" / folder_of(dest, f) / f["label"] / Path(f["rel"]).parent
 
 
 def version_files(dest, f):
@@ -545,6 +721,13 @@ def remote_key(peer, root):
     """How a folder of another PC is shown in the file list: Other PCs / name (id) / folder. A plain relative path, so every
     path function treats it like any other (a share-style \\\\name\\folder is mangled by Windows' own path code)."""
     return os.path.join("Other PCs", peer_tag(peer), safe_name(root))
+
+
+def remote_label(root):
+    """The folder name for a shared folder of another PC inside that PC's own folder on the drive. It follows the same
+    rule as a local folder's name, so a folder backed up from either PC lands in the same place."""
+    name = safe_name(root)
+    return "_" + name if name.upper() in RESERVED else name
 
 
 def old_remote_key(peer, root):
@@ -763,7 +946,7 @@ def scan_job():
                     barred = not old and in_skipped(p, skip_rules)     # new inside a folder the user skipped: stays skipped
                     new[i] = {"id": i, "path": p, "src": src, "label": old["label"] if keep else label,
                               "rel": old["rel"] if keep else rel,
-                              "size": st.st_size, "mtime": st.st_mtime,
+                              "size": st.st_size, "mtime": st.st_mtime, "atime": st.st_atime,
                               "selected": old["selected"] if old else int(auto and not barred),
                               "reviewed": old.get("reviewed", True) if old else (auto or barred),
                               "backed": old.get("backed", {}) if old else {}}
@@ -771,14 +954,14 @@ def scan_job():
                     if count % 2000 == 0:
                         job_set(done=count, total=max(expected, count), message=f"Scanned {count:,} files...")
     scanned = set(srcs)
-    offline, moved_all = [], set()
+    moved_all = set()
     for rs in SETTINGS.get("remote_sources", []):          # folders of other paired PCs, read over the network
         peer = PEERS.get(rs.get("pc", ""))
         if not peer:
             continue
         rroot = rs["root"]
         key = remote_key(peer, rroot)
-        rlabel = os.path.join("Remote PCs", peer_tag(peer), safe_name(rroot))
+        rlabel = remote_label(rroot)
         rnew, rfailed, refused, moved = {}, [], 0, set()
         old_key = old_remote_key(peer, rroot)
         job_set(message=f"Scanning {peer['name']} ({rroot})...")
@@ -810,7 +993,7 @@ def scan_job():
                            "selected": old["selected"] if old else int(auto and not barred),
                            "reviewed": old.get("reviewed", True) if old else (auto or barred),
                            "backed": old.get("backed", {}) if old else {},
-                           "remote": {"pc": peer["id"], "root": rroot, "rel": rel_s}}
+                           "remote": {"pc": peer["id"], "root": rroot, "rel": rel_s, "name": peer["name"]}}
                 count += 1
                 if count % 2000 == 0:
                     job_set(done=count, total=max(expected, count), message=f"Scanned {count:,} files...")
@@ -818,7 +1001,6 @@ def scan_job():
             state = set_peer_state(peer["id"], kind_state(e.kind))
             why = STATE_TEXT[state].rstrip(".")
             log("warn", "scan", f"Could not scan {peer['name']} ({rroot}): {why}. Its list is kept from the last scan.")
-            offline.append(f"{peer['name']} is not available ({why[0].lower() + why[1:]}): its list is from the last scan and its files cannot be backed up until it is back.")
             keep_src.add(key)
             continue
         set_peer_state(peer["id"], "online")
@@ -829,6 +1011,7 @@ def scan_job():
         new.update(rnew)
         failed.extend(rfailed)
         scanned.add(key)
+    adopted = adopt_known(new)
     with LOCK:
         for i, f in INDEX.items():
             if i in moved_all:
@@ -853,10 +1036,57 @@ def scan_job():
     write_json("meta.json", META)
     total = sum(f["size"] for f in new.values() if not f.get("stale"))     # files of a PC that was not reached are not counted as scanned
     msg = f"Scanned {count:,} files, {fmt(total)} in total. " + scan_summary()
-    if offline:
-        msg = " ".join(offline) + " " + msg
+    if adopted:
+        msg += (f" {adopted:,} of the new files are already on the backup drive from another PC: they were added to your backup "
+                "list, and the next backup links to those copies without writing them again.")
     log("info", "scan", msg)
     return msg
+
+
+def adopt_known(new):
+    """New files whose copy another PC already put on the backup drive are added to the backup list, so they are not
+    shown as new. Nothing is written here: the next backup confirms the content and links to the copy."""
+    if not SETTINGS.get("reuse_drive_copies", True):
+        return 0
+    cats, dests = [], []
+    for d in SETTINGS["destinations"]:
+        if not os.path.isdir(d):
+            continue
+        dests.append(d)
+        try:
+            c = make_catalog(d)
+        except (RuntimeError, OSError):
+            continue
+        if c.usable:
+            cats.append(c)
+    if not dests:
+        return 0
+    job_set(message="Looking for copies already on the backup drive...")
+    n = 0
+    with LOCK:
+        for i, f in new.items():
+            if i in INDEX or f.get("stale") or f["selected"] or f.get("reviewed", True) or f["backed"]:
+                continue                                   # only files waiting in New files, never one the user decided on
+            if at_its_place(dests, f) or any(c.seen(Path(f["rel"]).name, f["size"], f["mtime"]) for c in cats):
+                f["selected"], f["reviewed"] = 1, True
+                n += 1
+    return n
+
+
+def at_its_place(dests, f):
+    """A copy with this file's size and date is already where this PC would put it: backed up earlier (this PC's list was
+    lost or reset), or by another PC that backed this PC up over the network. The next backup confirms the content."""
+    for d in dests:
+        try:
+            p, gz = find_backup(d, f)
+            if p is None:
+                continue
+            size = drivecopies._gz_size(str(p)) if gz else p.stat().st_size
+            if size == (f["size"] & 0xFFFFFFFF if gz else f["size"]) and abs(p.stat().st_mtime - f["mtime"]) <= 2:
+                return True
+        except (OSError, RuntimeError):
+            continue
+    return False
 
 
 def copy_hashed(f, part, gz):
@@ -880,9 +1110,12 @@ def copy_hashed(f, part, gz):
 
 def copy_to(dest, f, h):
     gz = SETTINGS["compress"]
-    tgt = target_of(dest, f, gz)
+    tgt = target_of(dest, f, gz, create=True)
+    stamp_folder(dest, f)
     tgt.parent.mkdir(parents=True, exist_ok=True)
-    keep = int(SETTINGS["versions"])
+    keep = max(0, int(SETTINGS.get("keep_versions") or 0))
+    if tgt.exists() and not f["backed"].get(dest):
+        keep = max(keep, 1)                   # a copy this PC did not write (another PC's, or a file of the same name): never lose it
     if tgt.exists() and keep > 0:
         archive_version(dest, f, tgt, keep)
     part = tgt.with_name(tgt.name + ".part")
@@ -898,6 +1131,103 @@ def copy_to(dest, f, h):
         else:
             other.unlink(missing_ok=True)
     record(f, dest, h)
+
+
+def reuse_copy(dest, f, h, cat):
+    """Another PC already stored this exact content on `dest`: link to it instead of writing it again.
+    The link is a second name for the same data (NTFS), so it costs no space and the original is never touched.
+    Returns False (and changes nothing) when there is no such copy, or the drive cannot link."""
+    gz = SETTINGS["compress"]
+    src = cat.find(h, f["size"], Path(f["rel"]).name, gz)
+    tgt = target_of(dest, f, gz, create=True)
+    if not src or os.path.normcase(src) == os.path.normcase(str(tgt)):
+        return False
+    stamp_folder(dest, f)
+    tgt.parent.mkdir(parents=True, exist_ok=True)
+    tmp = tgt.with_name(tgt.name + ".part")
+    try:
+        tmp.unlink(missing_ok=True)
+        os.link(src, tmp)                          # nothing is changed yet if the drive cannot link (FAT, exFAT, network)
+    except OSError:
+        return False
+    try:
+        st = src_stat(f)
+        if (st.st_size, st.st_mtime) != (f["size"], f["mtime"]):
+            raise RuntimeError("the file changed while it was being backed up; it will be tried again on the next backup")
+        keep = max(0, int(SETTINGS.get("keep_versions") or 0))
+        if tgt.exists() and not f["backed"].get(dest):
+            keep = max(keep, 1)
+        if tgt.exists() and keep > 0:
+            archive_version(dest, f, tgt, keep)
+        os.replace(tmp, tgt)
+    finally:
+        tmp.unlink(missing_ok=True)
+    other = target_of(dest, f, not gz)
+    if other.exists():
+        if int(SETTINGS.get("keep_versions") or 0) > 0:
+            archive_version(dest, f, other, int(SETTINGS["keep_versions"]))
+        else:
+            other.unlink(missing_ok=True)
+    record(f, dest, h)
+    return True
+
+
+def migrate_legacy_remote(ds):
+    """Move what versions 1.3 to 1.5 stored under this PC's folder (Remote PCs / name (id) / folder) into the folder of
+    the PC it came from. The copies are renamed, never rewritten, and a file is only switched over when every copy
+    of it moved; otherwise it stays where it was and keeps working."""
+    with LOCK:
+        items = [f for f in list(INDEX.values()) + list(GONE.values()) if is_legacy_remote(f)]
+    n = 0
+    for f in items:
+        check_cancel()
+        nf = {**f, "label": remote_label(f["remote"]["root"])}
+        done, ok, empty = [], True, []
+        try:
+            for d in ds:
+                pairs = []
+                for gz in (False, True):
+                    old = target_of(d, f, gz)
+                    if old.exists():
+                        pairs.append((old, target_of(d, nf, gz, create=True)))
+                for e, _, _ in version_files(d, f):
+                    pairs.append((e, vdir(d, nf) / e.name))
+                for old, new in pairs:
+                    if new.exists():
+                        ok = False                      # something is already there: leave the old copy alone
+                        break
+                    new.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(old, new)
+                    done.append((old, new))
+                    empty.append((d, old.parent))
+                if pairs and ok:
+                    stamp_folder(d, nf)
+                if not ok:
+                    break
+        except (OSError, RuntimeError) as e:
+            ok = False
+            log("warn", "backup", f"Could not move {f['path']} into its own PC folder: {e}")
+        if ok:
+            for d, p in empty:                          # the legacy folders that are now empty go away
+                stop = Path(d) / ".versions" if ".versions" in p.parts else Path(d) / pc_folder(d)
+                while stop in p.parents and p.is_dir() and not any(p.iterdir()):
+                    p.rmdir()
+                    p = p.parent
+            with LOCK:
+                f["label"] = nf["label"]
+            n += 1
+        else:
+            for old, new in reversed(done):             # put back what moved, so the file is found in one place only
+                try:
+                    os.replace(new, old)
+                except OSError:
+                    pass
+    if n:
+        with LOCK:
+            mark()
+        write_json("gone.json", GONE)
+        log("info", "backup", f"Moved {n:,} files of other PCs into those PCs' own folders on the backup drive.")
+    return n
 
 
 def record(f, dest, h):
@@ -927,6 +1257,7 @@ def deep_changed(ds, already):
 
 def backup_job(trigger="manual", scan_first=False):
     _PCF.clear()                       # re-check which folder on the drive belongs to this PC
+    _TOUCHED.clear()
     refresh_destinations(True)
     if scan_first:
         scan_job()
@@ -943,6 +1274,7 @@ def backup_job(trigger="manual", scan_first=False):
         except OSError as e:
             raise RuntimeError(f"Cannot use destination {d}: {e}")
         pc_folder(d, create=True)
+    migrate_legacy_remote(ds)
     with LOCK:
         todo = [f for f in INDEX.values() if is_pending(f, ds)]
     waiting = sorted({f["remote"]["pc"] for f in todo if f.get("remote")})
@@ -960,6 +1292,8 @@ def backup_job(trigger="manual", scan_first=False):
             log("warn", "backup", f"Skipped the files of {peer['name'] if peer else 'a PC'}: {PEER_STATE[pid]['text'].rstrip('.')}.")
     if SETTINGS.get("deep_check"):
         todo += deep_changed(ds, {f["id"] for f in todo})
+    now = time.time()
+    todo.sort(key=lambda f: -importance(f, now)[0])        # the files that matter most are copied first
     unreachable = sum(1 for f in INDEX.values() if f.get("stale") and f["selected"] and status(f, ds) != "backed_up")
     if not todo:
         msg = ("Everything is already backed up. Nothing new or changed to copy." if not unreachable
@@ -984,8 +1318,9 @@ def backup_job(trigger="manual", scan_first=False):
             raise RuntimeError(f"Not enough space on {d}: needs {fmt(need[d])}, only {fmt(u['free'])} free")
     total_b = sum(f["size"] for f in todo)
     job_set(total=total_b, done=0, message=f"Backing up {len(todo)} files ({fmt(total_b)})...")
-    copied = skipped = failed = cbytes = done_b = 0
+    copied = skipped = failed = cbytes = done_b = reused = rbytes = present = 0
     errors = []
+    cats = {d: make_catalog(d) for d in ds}     # copies other PCs (or an earlier backup of this PC's files by another PC) already put on the drive
     t0 = time.time()
     for n, f in enumerate(todo, 1):
         check_cancel()
@@ -995,13 +1330,24 @@ def backup_job(trigger="manual", scan_first=False):
                 f["size"], f["mtime"] = st.st_size, st.st_mtime
                 mark()
             h = src_hash(f)
-            did = bad = False
+            did = bad = linked = False
             for d in ds:
                 b = f["backed"].get(d)
                 if b and b["hash"] == h:
                     record(f, d, h)  # content unchanged, only the timestamp moved
                     continue
                 try:
+                    if already_stored(d, f, h):
+                        stamp_folder(d, f)
+                        record(f, d, h)                    # the same copy is already at its place on the drive: nothing to write
+                        linked = True
+                        present += 1
+                        continue
+                    if SETTINGS.get("reuse_drive_copies", True) and cats[d].usable and reuse_copy(d, f, h, cats[d]):
+                        linked = True
+                        reused += 1
+                        rbytes += f["size"]
+                        continue
                     copy_to(d, f, h)
                     did = True
                     cbytes += f["size"]
@@ -1012,7 +1358,7 @@ def backup_job(trigger="manual", scan_first=False):
                 failed += 1
             elif did:
                 copied += 1
-            else:
+            elif not linked:
                 skipped += 1
         except Exception as e:
             failed += 1
@@ -1022,8 +1368,19 @@ def backup_job(trigger="manual", scan_first=False):
     for e in errors[:50]:
         log("error", "backup", e)
     secs = round(time.time() - t0, 1)
+    for d, folder in list(_TOUCHED):                       # when each other PC's folder was last backed up from here
+        idf = Path(d) / folder / "pc-id.json"
+        data = read_json_at(idf)
+        if isinstance(data, dict):
+            data["last_backup"] = datetime.now().isoformat(sep=" ", timespec="seconds")
+            try:
+                write_json_at(idf, data)
+            except OSError:
+                pass
     msg = (f"Backup ({trigger}): {copied} copied ({fmt(cbytes)}), {skipped} unchanged, "
-           f"{failed} failed in {secs}s" + (f". {unreachable:,} files on a PC that cannot be reached were skipped." if unreachable else ""))
+           + (f"{present} already on the drive at their place (backed up earlier, by this PC or another), " if present else "")
+           + (f"{reused} already on the drive from another PC and reused ({fmt(rbytes)} not written again), " if reused else "")
+           + f"{failed} failed in {secs}s" + (f". {unreachable:,} files on a PC that cannot be reached were skipped." if unreachable else ""))
     log("warn" if failed else "info", "backup", msg)
     HISTORY.append({"at": datetime.now().isoformat(sep=" ", timespec="seconds"), "trigger": trigger,
                     "copied": copied, "skipped": skipped, "failed": failed,
@@ -1081,6 +1438,10 @@ def verify_job():
         job_set(done=n, message=f"{n} of {len(items)} copies checked")
     msg = f"Verified {ok} copies OK, {bad} problems"
     log("warn" if bad else "info", "verify", msg)
+    META["last_verify"] = {"at": datetime.now().isoformat(sep=" ", timespec="seconds"), "ok": ok, "bad": bad}
+    write_json("meta.json", META)
+    if bad:
+        notify(msg)
     return msg
 
 
@@ -1098,12 +1459,24 @@ def restore_job(items, target, overwrite):
             d = it.get("dest")
             if not f or d not in SETTINGS["destinations"]:
                 raise RuntimeError("unknown file or destination")
-            src, gz = find_backup(d, f)
+            ver = str(it.get("version") or "")
+            if ver:
+                hit = next(((e, ts, g) for e, ts, g in version_files(d, f) if e.name == ver), None)
+                if not hit:
+                    raise RuntimeError("that older version is no longer on the drive")
+                src, gz = hit[0], hit[2]
+            else:
+                src, gz = find_backup(d, f)
             if not src or not src.exists():
                 raise RuntimeError("backup copy not found")
             if f.get("remote") and not target:
                 raise RuntimeError("Choose a folder to restore into: this file came from another PC.")
-            out = Path(target) / f["label"] / f["rel"] if target else Path(f["path"])
+            if target:                                     # another PC's files go under that PC's name, so two PCs never mix
+                out = Path(target) / (folder_of(d, f) if foreign_folder(d, f) else "") / f["label"] / f["rel"]
+            else:
+                out = Path(f["path"])
+            if ver:                                        # an older version is put beside the file, never over it
+                out = out.with_name(f"{out.stem} (version {hit[1]}){out.suffix}")
             if out.exists() and not overwrite:
                 skipped += 1
                 continue
@@ -1297,6 +1670,7 @@ def scheduler():
                 busy = JOB["state"] == "running"
             if busy:
                 continue
+            alert_check()
             s, now = SETTINGS["schedule"], datetime.now()
             if (s["enabled"] and now.weekday() in s["days"] and now.strftime("%H:%M") >= s["time"]
                     and META.get("last_scheduled") != now.date().isoformat()):
@@ -1409,6 +1783,9 @@ def clean_settings(b):
     s["new_files"] = "include" if b.get("new_files") == "include" else "review"
     s["max_size_mb"] = max(0, int(b.get("max_size_mb") or 0))
     s["versions"] = 0
+    s["keep_versions"] = min(20, max(0, int(b.get("keep_versions") or 0)))
+    s["alert_low_space_pct"] = min(90, max(0, int(b.get("alert_low_space_pct") or 0)))
+    s["alert_stale_days"] = min(365, max(0, int(b.get("alert_stale_days") or 0)))
     s["compress"] = bool(b.get("compress"))
     sc = b.get("schedule") or {}
     if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", str(sc.get("time", ""))):
@@ -1422,6 +1799,7 @@ def clean_settings(b):
     s["webhook"] = w
     s["update_check"] = bool(b.get("update_check", True))
     s["deep_check"] = bool(b.get("deep_check"))
+    s["reuse_drive_copies"] = bool(b.get("reuse_drive_copies", True))
     return s
 
 
@@ -1604,8 +1982,16 @@ def restore():
 # ---------------------------------------------------------------- data views
 
 def filtered(a):
+    sq = smartsearch.Query(a.get("q") or "")
+    out = _filtered(a, sq, False)
+    if not out and sq.can_fuzzy:                           # nothing matched: forgive a typo or two
+        out = _filtered(a, sq, True)
+    return out
+
+
+def _filtered(a, sq, fuzzy):
     ds = SETTINGS["destinations"]
-    q, st, ext = (a.get("q") or "").lower(), a.get("status") or "all", (a.get("ext") or "").lower()
+    st, ext = a.get("status") or "all", (a.get("ext") or "").lower()
     cat = a.get("cat") or ""
     a_sel = bool(a.get("sel"))
     dest = a.get("dest") or ""
@@ -1615,7 +2001,7 @@ def filtered(a):
         if st == "has_backup":
             files += list(GONE.values())      # deleted from the PC, still restorable from the backup
     for f in files:
-        if q and q not in f["path"].lower():
+        if not sq.empty and not sq.match(f["path"], f["size"], os.path.splitext(f["rel"])[1], fuzzy):
             continue
         if ext and (os.path.splitext(f["rel"])[1].lower() or "(none)") != ext:
             continue
@@ -1644,7 +2030,8 @@ def filtered(a):
 def files():
     a = request.args
     rows = filtered(a)
-    key = {"size": lambda r: r[0]["size"], "mtime": lambda r: r[0]["mtime"],
+    now = time.time()
+    key = {"size": lambda r: r[0]["size"], "mtime": lambda r: r[0]["mtime"], "score": lambda r: importance(r[0], now)[0],
            "status": lambda r: r[1]}.get(a.get("sort"), lambda r: r[0]["path"].lower())
     rows.sort(key=key, reverse=a.get("dir") == "desc")
     off, lim = max(0, int(a.get("offset", 0))), min(500, max(1, int(a.get("limit", 200))))
@@ -1704,6 +2091,183 @@ def versions(i):
             except OSError:
                 pass
     return jsonify(out)
+
+
+# ---------------------------------------------------------------- preview
+
+PREVIEW_CAP = 64 * 1024 * 1024         # the most of one file that is held in memory to look inside it
+REMOTE_RAW_CAP = 300 * 1024 * 1024     # the biggest file streamed live from another PC just to be looked at
+
+
+def preview_source(f):
+    """Where to read a file from, best first: the file itself on this PC, a copy on a connected backup drive, or the
+    other PC it came from (live). None when it can be read from none of them."""
+    if not f.get("remote"):
+        try:
+            if os.path.isfile(f["path"]):
+                return {"kind": "pc", "path": f["path"], "gz": False, "label": "This PC"}
+        except OSError:
+            pass
+    for d in SETTINGS["destinations"]:
+        if not os.path.isdir(d):
+            continue
+        try:
+            p, gz = find_backup(d, f)
+        except RuntimeError:
+            continue
+        if p:
+            return {"kind": "drive", "path": str(p), "gz": gz, "dest": d, "label": f"Backup copy on {d}"}
+    r = f.get("remote")
+    if r and not f.get("stale"):
+        peer = PEERS.get(r["pc"]) or {}
+        return {"kind": "remote", "gz": False, "label": f"Live from {peer.get('name') or r.get('name') or 'the other PC'}"}
+    return None
+
+
+def preview_open(src, f):
+    """(a seekable binary file, whether it holds the whole file). A real file is opened as it is; a compressed copy or a
+    file on another PC is read into memory, up to PREVIEW_CAP."""
+    if src["kind"] != "remote" and not src["gz"]:
+        return open(src["path"], "rb"), True
+    if src["gz"]:
+        with gzip.open(src["path"], "rb") as g:
+            data = g.read(PREVIEW_CAP + 1)
+    else:
+        with src_open(f) as r:
+            data = r.read(PREVIEW_CAP + 1)
+    return io.BytesIO(data[:PREVIEW_CAP]), len(data) <= PREVIEW_CAP
+
+
+def preview_none(base, reason):
+    return jsonify({**base, "mode": "none", "reason": reason})
+
+
+@app.get("/api/preview/<i>")
+def preview_info(i):
+    """What the Preview window shows for one file: how to show it, and the content for the kinds that are read here."""
+    f = INDEX.get(i) or GONE.get(i)
+    if not f:
+        return jsonify(error="Unknown file"), 404
+    ds = SETTINGS["destinations"]
+    name = os.path.basename(f["path"])
+    base = {"id": i, "name": name, "path": f["path"], "size": f["size"], "mtime": f["mtime"], "gone": i in GONE and i not in INDEX,
+            "status": status(f, ds), "selected": int(f.get("selected") or 0), "reviewed": bool(f.get("reviewed", True)), "backed": [{"dest": d, "at": b.get("at", "")} for d, b in (f.get("backed") or {}).items()],
+            "from_pc": (PEERS.get(f["remote"]["pc"]) or {}).get("name") or f["remote"].get("name") if f.get("remote") else None}
+    src = preview_source(f)
+    if not src:
+        why = ("That PC cannot be reached right now, and no connected backup drive has a copy." if f.get("remote")
+               else "The file is no longer on this PC, and no connected backup drive has a copy. Connect the backup drive to look at it.")
+        return preview_none(base, why)
+    base["source"] = src["label"]
+    mode = preview.mode_for(name)
+    try:
+        if src["kind"] == "remote" and f["size"] > REMOTE_RAW_CAP:
+            return preview_none(base, "This file is large and is on another PC. Back it up first, then it can be previewed from the drive.")
+        if preview.raw_mode(name):
+            extra = {}
+            if mode == "audio" and preview.ext_of(name) == "mp3" and src["kind"] != "remote":
+                try:
+                    with (gzip.open(src["path"], "rb") if src["gz"] else open(src["path"], "rb")) as fh:
+                        extra["tags"] = preview.id3_tags(fh.read(1_000_000))
+                except (OSError, EOFError):
+                    pass
+            return jsonify({**base, "mode": mode, "raw": f"/api/preview/{i}/raw", **extra})
+        fh, whole = preview_open(src, f)
+        with fh:
+            try:
+                out = preview.build(name, fh, f["size"])
+            except (preview.zipfile.BadZipFile, preview.tarfile.TarError, preview.ET.ParseError, EOFError, ValueError, KeyError, OSError) as e:
+                fh.seek(0)
+                out = {**preview.hex_preview(fh), "note": f"This looks like a {mode} file but it could not be read as one ({e.__class__.__name__}), so the start of its bytes is shown instead."}
+            if not whole and out.get("mode") != "text":
+                out["note"] = f"This file is bigger than {fmt(PREVIEW_CAP)}, so only its start could be read."
+    except remote.RemoteError as e:
+        return preview_none(base, f"Could not read it from the other PC: {e}")
+    except OSError as e:
+        return preview_none(base, f"Could not read the file: {e}")
+    return jsonify({**base, **out})
+
+
+PART_NAME = re.compile(r"(?:word|ppt|xl)/media/[A-Za-z0-9_ .()\-]{1,120}\.(png|jpe?g|gif|webp|bmp)", re.I)
+PART_MAX = 25 * 1024 * 1024
+_PART_CACHE = {}                       # the last compressed or remote document opened for its pictures: one entry, so memory stays bounded
+
+
+@app.get("/api/preview/<i>/part")
+def preview_part(i):
+    """One picture from inside a Word, PowerPoint or Excel file, for the preview to draw in the page. Only pictures under the
+    document's media folder, only picture types, size-limited, and served in a sandbox."""
+    f = INDEX.get(i) or GONE.get(i)
+    if not f:
+        return jsonify(error="Unknown file"), 404
+    name = request.args.get("name", "")
+    m = PART_NAME.fullmatch(name)
+    if not m or ".." in name or preview.ext_of(f["path"]) not in ("docx", "docm", "pptx", "pptm", "xlsx", "xlsm"):
+        return jsonify(error="Not a picture inside this file"), 400
+    src = preview_source(f)
+    if not src:
+        return jsonify(error="No copy of this file can be read right now"), 404
+    try:
+        if src["kind"] != "remote" and not src["gz"]:
+            zf = preview.zipfile.ZipFile(src["path"])
+        else:
+            key = (i, f["size"], f["mtime"], src["kind"])
+            if _PART_CACHE.get("key") != key:
+                fh, whole = preview_open(src, f)
+                _PART_CACHE.clear()
+                _PART_CACHE.update(key=key, data=fh.getvalue() if whole else b"")
+            zf = preview.zipfile.ZipFile(io.BytesIO(_PART_CACHE["data"]))
+        with zf:
+            info = zf.getinfo(name)
+            if info.file_size > PART_MAX:
+                return jsonify(error="That picture is too large to show"), 413
+            data = zf.read(info)
+    except KeyError:
+        return jsonify(error="No such picture in this file"), 404
+    except (OSError, preview.zipfile.BadZipFile, remote.RemoteError) as e:
+        return jsonify(error=f"Could not read it: {e}"), 404
+    mime = {"png": "image/png", "gif": "image/gif", "webp": "image/webp", "bmp": "image/bmp"}.get(m.group(1).lower(), "image/jpeg")
+    resp = Response(data, mimetype=mime)
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["Content-Security-Policy"] = "sandbox; default-src 'none'; img-src 'self' data:"
+    resp.headers["Cache-Control"] = "private, max-age=300"
+    return resp
+
+
+@app.get("/api/preview/<i>/raw")
+def preview_raw(i):
+    """The file's own bytes, for the browser to show (images, PDF, video, audio only). Never an HTML or script type, and
+    everything but a PDF is served in a sandbox, so even an SVG with a script in it cannot run."""
+    f = INDEX.get(i) or GONE.get(i)
+    if not f:
+        return jsonify(error="Unknown file"), 404
+    mime = preview.raw_type(f["path"])
+    if not mime:
+        return jsonify(error="This kind of file cannot be shown directly"), 415
+    src = preview_source(f)
+    if not src:
+        return jsonify(error="No copy of this file can be read right now"), 404
+    if src["kind"] == "remote" and f["size"] > REMOTE_RAW_CAP:
+        return jsonify(error="Too large to show live from another PC"), 413
+    try:
+        if src["kind"] != "remote" and not src["gz"]:
+            resp = send_file(src["path"], mimetype=mime, conditional=True, max_age=0)
+        else:
+            def chunks():
+                try:
+                    with (gzip.open(src["path"], "rb") if src["gz"] else src_open(f)) as fh:
+                        for c in iter(lambda: fh.read(1 << 20), b""):
+                            yield c
+                except (OSError, remote.RemoteError):
+                    return
+            resp = Response(chunks(), mimetype=mime)
+    except OSError as e:
+        return jsonify(error=str(e)), 404
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["Cache-Control"] = "private, no-cache"
+    if mime != "application/pdf":
+        resp.headers["Content-Security-Policy"] = "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'"
+    return resp
 
 
 def _explore(path):
@@ -1812,6 +2376,24 @@ def review():
     return jsonify(memo(("review", tuple(sources())), lambda: _collapsed(lambda f: not f.get("reviewed", True))))
 
 
+def _suggested(limit=20):
+    """The new files most worth backing up, best first, each with the reason it was picked."""
+    with LOCK:
+        cand = [f for f in INDEX.values() if not f.get("reviewed", True) and not f.get("stale")]
+    now = time.time()
+    scored = sorted(((importance(f, now), f) for f in cand), key=lambda x: -x[0][0])
+    top = [x for x in scored if x[0][0] >= 50][:limit]
+    return dict(total=len(cand), items=[{"id": f["id"], "path": f["path"], "name": os.path.basename(f["path"]),
+                                         "parent": os.path.dirname(f["path"]), "bytes": f["size"], "score": sc, "reason": why}
+                                        for (sc, why), f in top])
+
+
+@app.get("/api/suggested")
+def suggested():
+    """New files to start with: recently used, of the kinds people keep, in the places they keep them."""
+    return jsonify(memo(("suggested", tuple(sources())), _suggested))
+
+
 @app.get("/api/selected")
 def selected():
     """Files chosen for backup."""
@@ -1916,8 +2498,11 @@ def devices():
                         continue
                     ch = Path(e.path) / "choices.json.gz"
                     last = datetime.fromtimestamp(ch.stat().st_mtime).isoformat(sep=" ", timespec="seconds") if ch.exists() else None
+                    other = str(meta.get("last_backup") or "").replace("T", " ") or None       # set when another PC backed this one up
+                    by = [str(x) for x in meta.get("backed_up_by", []) if isinstance(x, str)] if isinstance(meta.get("backed_up_by"), list) else []
                     entry["devices"].append({"folder": e.name, "name": str(meta.get("name") or e.name), "user": str(meta.get("user") or ""),
-                                             "first_backup": meta.get("first_backup"), "last_backup": last, "this_pc": meta.get("id") == PC["id"]})
+                                             "first_backup": meta.get("first_backup"), "last_backup": max(filter(None, (last, other)), default=None),
+                                             "backed_up_by": by, "this_pc": meta.get("id") == PC["id"]})
                 except OSError:
                     continue
             entry["devices"].sort(key=lambda x: (not x["this_pc"], x["name"].lower()))
@@ -2010,9 +2595,69 @@ def _stats_core():
     r["offline_pcs"] = offline_pcs(fl)
     r["history"] = [{"day": (today - timedelta(days=i)).strftime("%m-%d"),
                      "bytes": days.get((today - timedelta(days=i)).isoformat(), 0)} for i in range(13, -1, -1)]
-    r["largest_files"] = [{"path": f["path"], "size": f["size"]} for f in heapq.nlargest(10, fl, key=lambda f: f["size"])]
+    r["largest_files"] = [{"id": f["id"], "path": f["path"], "size": f["size"]} for f in heapq.nlargest(10, fl, key=lambda f: f["size"])]
     r["largest_folders"] = [{"name": k, "size": v} for k, v in sorted(folders_.items(), key=lambda x: -x[1])[:10]]
     return r
+
+
+def compute_alerts(core):
+    """What needs the owner's attention: a missing or full drive, no recent backup, a failed check or backup."""
+    ds, out = SETTINGS["destinations"], []
+    for d in ds:
+        info, saved = volume_info(d), SETTINGS.get("dest_vols", {}).get(d)
+        if (saved and (not info or info[1] != saved)) or existing_ancestor(d) is None:
+            out.append(dict(key="drive:" + d, level="error", title="Backup drive not connected",
+                            text=f"{d} cannot be found. Plug the drive in so the next backup can run.", go="settings"))
+            continue
+        u = disk(d)
+        if not u or not u["total"]:
+            continue
+        pct, lim = u["free"] / u["total"] * 100, int(SETTINGS.get("alert_low_space_pct") or 0)
+        if core["pending_bytes"] > u["free"]:
+            out.append(dict(key="space:" + d, level="error", title="Not enough room for the next backup",
+                            text=f"{fmt(core['pending_bytes'])} is waiting but {d} has only {fmt(u['free'])} free.", go="settings"))
+        elif lim and pct < lim:
+            out.append(dict(key="low:" + d, level="warn", title="Backup drive is almost full",
+                            text=f"{d} has {fmt(u['free'])} free ({pct:.0f}% of {fmt(u['total'])}).", go="settings"))
+    days = int(SETTINGS.get("alert_stale_days") or 0)
+    if days and core["selected_files"]:
+        last = META.get("last_backup")
+        try:
+            age = (datetime.now() - datetime.fromisoformat(last)).days if last else None
+        except ValueError:
+            age = None
+        if age is None or age >= days:
+            out.append(dict(key="stale", level="warn", title="No recent backup",
+                            text=("Nothing has been backed up yet." if age is None else f"The last backup was {age} days ago.") + " Click Back up now.", go="dashboard"))
+    if HISTORY and HISTORY[-1].get("failed"):
+        out.append(dict(key="failed:" + HISTORY[-1]["at"], level="warn", title="Some files failed to back up",
+                        text=f"{HISTORY[-1]['failed']} files could not be copied on {HISTORY[-1]['at']}. See the Logs for why.", go="logs"))
+    lv = META.get("last_verify")
+    if lv and lv.get("bad"):
+        out.append(dict(key="verify:" + lv["at"], level="warn", title="The last check found problems",
+                        text=f"{lv['bad']} backup copies were missing or damaged on {lv['at']}. They will be copied again on the next backup.", go="logs"))
+    return out
+
+
+ALERT_EVERY = [0.0]
+
+
+def alert_check():
+    """Send each new warning to the webhook once a day, so a full or missing drive is not noticed too late."""
+    if time.time() - ALERT_EVERY[0] < 600 or not SETTINGS.get("webhook"):
+        return
+    ALERT_EVERY[0] = time.time()
+    refresh_destinations()
+    core = memo(("stats", tuple(SETTINGS["destinations"])), _stats_core)
+    today = datetime.now().date().isoformat()
+    sent = {k: v for k, v in META.get("alerted", {}).items() if v == today}      # yesterday's are forgotten, so they can come back
+    fresh = [a for a in compute_alerts(core) if a["key"] not in sent]
+    for a in fresh:
+        sent[a["key"]] = today
+        notify(f"{a['title']}: {a['text']}")
+    if fresh or sent != META.get("alerted"):
+        META["alerted"] = sent
+        write_json("meta.json", META)
 
 
 @app.get("/api/stats")
@@ -2024,6 +2669,8 @@ def stats():
                           **(disk(d) or {"free": None, "total": None})} for d in ds]
     r["last_backup"] = META.get("last_backup")
     r["next_run"] = next_run()
+    r["alerts"] = compute_alerts(r)
+    r["last_verify"] = META.get("last_verify")
     r["sharing"] = bool(AGENT.server)
     r["sharing_connected"] = len(AGENT.status()["connected"]) if AGENT.server else 0
     return jsonify(r)

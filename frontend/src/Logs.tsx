@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, LogRow } from "./api";
+import { Cluster, Group } from "./Panel";
+import { SearchBox } from "./SearchBox";
+import { searchHelp } from "./smart";
 import { Select } from "./Select";
 
 export function Logs({ tick }: { tick: number }) {
@@ -9,9 +12,10 @@ export function Logs({ tick }: { tick: number }) {
   const load = useCallback(async () => { const my = ++seq.current; const r = await api<LogRow[]>("/api/logs?" + qs); if (my === seq.current) setLogs(r); }, [qs]);
   useEffect(() => { const t = setTimeout(load, 200); return () => clearTimeout(t); }, [load, tick]);
   return (
-    <>
+    <Group title="Logs" lead="Everything the tool has done, newest first.">
+      <Cluster>
       <div className="toolbar">
-        <input aria-label="Search logs" placeholder="Search the log" value={q} onChange={e => setQ(e.target.value)} />
+        <SearchBox saveKey="logs" label="Search logs" placeholder="Search the log: words, level:error, -word" value={q} onChange={setQ} help={searchHelp + " level:error shows only errors."} />
         <Select label="Level" value={level} onChange={setLevel} options={[{ value: "", label: "All levels" }, { value: "info", label: "Info" }, { value: "warn", label: "Warnings" }, { value: "error", label: "Errors" }]} />
         <button onClick={load}>Refresh</button>
         <a className="btn" href={"/api/logs.csv?" + qs}>Export CSV</a>
@@ -25,6 +29,7 @@ export function Logs({ tick }: { tick: number }) {
           </tbody>
         </table>
       </div>
-    </>
+      </Cluster>
+    </Group>
   );
 }

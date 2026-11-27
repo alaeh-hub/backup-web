@@ -220,7 +220,9 @@ def test_another_pc_is_scanned_backed_up_and_restorable(rig, wired, tmp_path):
     assert f["path"].startswith(os.path.join("Other PCs", TAG, "docs")) and f["remote"]["pc"] == "b-id-1234567890"
     rig.choose_all()
     backup.backup_job()
-    base = rig.dest / backup.pc_folder(str(rig.dest)) / "Remote PCs" / TAG / "docs"
+    base = rig.dest / "OFFICE-PC" / "docs"                                     # the other PC's own folder on the drive
+    assert json.loads((rig.dest / "OFFICE-PC" / "pc-id.json").read_text())["id"] == "b-id-1234567890"
+    assert not (rig.dest / backup.pc_folder(str(rig.dest)) / "Remote PCs").exists()
     assert (base / "Reports" / "q1.txt").read_text() == "quarterly" and (base / "notes.txt").read_text() == "notes"
     assert all(backup.status(f, [str(rig.dest)]) == "backed_up" for f in backup.INDEX.values())
     assert "Everything is already backed up" in backup.backup_job()
@@ -236,7 +238,7 @@ def test_another_pc_is_scanned_backed_up_and_restorable(rig, wired, tmp_path):
     assert "1 failed" in backup.restore_job([{"id": ids[0], "dest": str(rig.dest)}], "", False)
     out = tmp_path / "restored"
     assert "Restored 1 files" in backup.restore_job([{"id": ids[0], "dest": str(rig.dest)}], str(out), False)
-    assert (out / "Remote PCs" / TAG / "docs" / "notes.txt").read_text() == "notes, edited"
+    assert (out / "OFFICE-PC" / "docs" / "notes.txt").read_text() == "notes, edited"
 
 
 def test_an_unreachable_pc_keeps_its_old_list_and_backups(rig, wired):
@@ -353,10 +355,10 @@ def test_two_pcs_with_the_same_name_do_not_overwrite_each_other(rig, pr, tmp_pat
         assert len(backup.INDEX) == 2                                  # not one record that the other replaced
         rig.choose_all()
         backup.backup_job()
-        base = rig.dest / backup.pc_folder(str(rig.dest)) / "Remote PCs"
-        assert sorted(p.name for p in base.iterdir()) == ["OFFICE-PC (b-id-1)", "OFFICE-PC (c-id-0)"]
-        assert (base / "OFFICE-PC (b-id-1)" / "docs" / "a.txt").read_text() == "from the first PC"
-        assert (base / "OFFICE-PC (c-id-0)" / "docs" / "a.txt").read_text() == "from the second PC"
+        folders = sorted(p.name for p in rig.dest.iterdir() if p.is_dir() and (p / "pc-id.json").exists())
+        assert folders == sorted(["OFFICE-PC", "OFFICE-PC-c-id-0", backup.pc_folder(str(rig.dest))])
+        assert (rig.dest / "OFFICE-PC" / "docs" / "a.txt").read_text() == "from the first PC"
+        assert (rig.dest / "OFFICE-PC-c-id-0" / "docs" / "a.txt").read_text() == "from the second PC"
     finally:
         other.b.stop()
 
@@ -397,7 +399,7 @@ def test_backups_of_a_forgotten_pc_stay_restorable(rig, wired, tmp_path, monkeyp
     assert len(gone) == 1                                                      # its backup is still listed, restorable
     out = tmp_path / "back"
     assert "Restored 1 files" in backup.restore_job([{"id": gone[0], "dest": str(rig.dest)}], str(out), False)
-    assert (out / "Remote PCs" / TAG / "docs" / "Reports" / "q1.txt").read_text() == "quarterly"
+    assert (out / "OFFICE-PC" / "docs" / "Reports" / "q1.txt").read_text() == "quarterly"
 
 
 def test_changing_the_auto_off_setting_changes_the_running_timer(pr):
@@ -482,7 +484,7 @@ def test_scanning_a_pc_that_stopped_sharing_says_so_and_stops_promising_its_file
     assert rig.get("/api/stats").json["pending_files"] == 1
     wired.b.stop()                                                             # the other PC turns sharing off
     msg = backup.scan_job()
-    assert "OFFICE-PC is not available" in msg and "sharing is off" in msg.lower() and "cannot be backed up" in msg
+    assert "OFFICE-PC" not in msg and "not available" not in msg      # scanning this PC says nothing about the unreachable one
     assert "Scanned 0 files, 0 B" in msg and "Everything chosen is backed up" not in msg and "cannot be reached right now" in msg
     st = rig.get("/api/stats").json
     assert st["pending_files"] == 0                                            # nothing is waiting that cannot be copied

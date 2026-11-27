@@ -27,6 +27,8 @@ export function DialogHost() {
     okBtn.current?.focus();
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape") { e.preventDefault(); close(false); }
+      else if (reqRef.current?.cancel && !e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "y" || e.key === "Y")) { e.preventDefault(); close(true); }       // Y is yes
+      else if (reqRef.current?.cancel && !e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "n" || e.key === "N")) { e.preventDefault(); close(false); }      // N is no
       else if (e.key === "Tab") {                                   // keep the focus inside the dialog
         const items = Array.from(box.current?.querySelectorAll<HTMLElement>("button") ?? []);
         if (!items.length) return;

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { Icon } from "./ui";
+import { PreviewButton } from "./Preview";
+import { SearchBox } from "./SearchBox";
 import { Select } from "./Select";
 import { ask } from "./Dialog";
 import { Presets } from "./Presets";
@@ -66,10 +68,10 @@ function FileBrowser({ onChange }: { onChange: () => void }) {
         </div>
       )}
       <div className="toolbar">
-        <input aria-label="Search files" placeholder="Search by name or folder" value={q} onChange={e => setQ(e.target.value)} />
+        <SearchBox saveKey="files" label="Search files" placeholder="Search files: name, folder, .pdf, >10mb" value={q} onChange={setQ} />
         <Select label="Status" value={status} onChange={setStatus} options={[{ value: "all", label: "All statuses" }, { value: "review", label: "To review (new files)" }, { value: "skipped", label: "Skipped (not backed up)" }, ...(Object.keys(label) as Status[]).map(s => ({ value: s, label: label[s] }))]} />
         <Select label="File type" value={ext} onChange={setExt} options={[{ value: "", label: "All types" }, ...exts.map(([e, n]) => ({ value: e, label: `${e} (${n})` }))]} />
-        <Select label="Sort by" value={sort} onChange={setSort} options={[{ value: "name", label: "Sort by name" }, { value: "size", label: "Sort by size" }, { value: "mtime", label: "Sort by modified" }, { value: "status", label: "Sort by status" }]} />
+        <Select label="Sort by" value={sort} onChange={v => { setSort(v); if (v === "score") setDir("desc"); }} options={[{ value: "name", label: "Sort by name" }, { value: "size", label: "Sort by size" }, { value: "mtime", label: "Sort by modified" }, { value: "score", label: "Sort by most important" }, { value: "status", label: "Sort by status" }]} />
         <button onClick={() => setDir(dir === "asc" ? "desc" : "asc")}>{dir === "asc" ? "Ascending" : "Descending"}</button>
       </div>
       <div className="toolbar">
@@ -97,12 +99,13 @@ function FileBrowser({ onChange }: { onChange: () => void }) {
           </ul>
           {!!ex?.files.length && (
             <div className="scroll"><table className="ft">
-              <thead><tr><th>Back up</th><th>File</th><th>Size</th><th>Modified</th><th>Status</th></tr></thead>
+              <thead><tr><th>Back up</th><th>File</th><th>Size</th><th>Modified</th><th>Status</th><th><span className="sr">Preview</span></th></tr></thead>
               <tbody>{ex.files.map(f => (
                 <tr key={f.id}>
                   <td><label className="switch"><input type="checkbox" checked={!!f.selected} onChange={() => toggle(f)} aria-label={"Back up " + f.path} /><span /></label></td>
                   <td className="path" title={f.path}><bdi>{f.path.split(/[\\/]/).pop()}</bdi></td><td className="nowrap">{fmt(f.size)}</td>
                   <td className="nowrap">{new Date(f.mtime * 1000).toLocaleDateString()}</td><td><span className={"tag " + f.status}>{f.review ? "To review" : f.selected ? label[f.status] : "Skipped"}</span></td>
+                  <td><PreviewButton id={f.id} ids={ex.files.map(x => x.id)} name={f.path.split(/[\/]/).pop() ?? f.path} /></td>
                 </tr>))}</tbody>
             </table></div>
           )}
@@ -110,16 +113,17 @@ function FileBrowser({ onChange }: { onChange: () => void }) {
       ) : (<>
       <div className="scroll">
         <table className="ft">
-          <thead><tr><th>Back up</th><th>File</th><th>Size</th><th>Modified</th><th>Status</th></tr></thead>
+          <thead><tr><th>Back up</th><th>File</th><th>Size</th><th>Modified</th><th>Status</th><th><span className="sr">Preview</span></th></tr></thead>
           <tbody>
             {rows.map(f => (
               <tr key={f.id}>
                 <td><label className="switch"><input type="checkbox" checked={!!f.selected} onChange={() => toggle(f)} aria-label={"Back up " + f.path} /><span /></label></td>
                 <td className="path" title={f.path}><bdi>{f.path}</bdi></td><td className="nowrap">{fmt(f.size)}</td>
                 <td className="nowrap">{new Date(f.mtime * 1000).toLocaleDateString()}</td><td><span className={"tag " + f.status}>{f.review ? "To review" : f.selected ? label[f.status] : "Skipped"}</span></td>
+                <td><PreviewButton id={f.id} ids={rows.map(x => x.id)} name={f.path} /></td>
               </tr>
             ))}
-            {!rows.length && <tr><td colSpan={5} className="empty">No files match. Click “Scan files” first.</td></tr>}
+            {!rows.length && <tr><td colSpan={6} className="empty">No files match. Click “Scan files” first.</td></tr>}
           </tbody>
         </table>
       </div>

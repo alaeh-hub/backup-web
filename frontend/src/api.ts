@@ -12,16 +12,19 @@ export const fmt = (n: number | null | undefined) => {
 export type Status = "new" | "modified" | "backed_up";
 export const label: Record<Status, string> = { new: "New", modified: "Modified", backed_up: "Backed up" };
 export interface FileRow { id: string; path: string; size: number; mtime: number; selected: number; review: boolean; status: Status }
-export interface Device { folder: string; name: string; user: string; first_backup: string | null; last_backup: string | null; this_pc: boolean }
+export interface Device { folder: string; name: string; user: string; first_backup: string | null; last_backup: string | null; backed_up_by?: string[]; this_pc: boolean }
 export interface DeviceDrive { dest: string; reachable: boolean; label: string; devices: Device[] }
 export interface Dest { path: string; label?: string; pc_folder?: string; free: number | null; total: number | null }
 export interface Stats {
   files: number; total_bytes: number; selected_files: number; selected_bytes: number; pending_files: number; pending_bytes: number;
-  backed_files: number; backed_bytes: number; new_files: number; review_files: number; review_bytes: number; skipped_files: number; skipped_bytes: number; pc_name: string; last_backup: string | null; next_run: string | null;
+  backed_files: number; backed_bytes: number; new_files: number; review_files: number; review_bytes: number; skipped_files: number; skipped_bytes: number; pc_name: string; last_backup: string | null; next_run: string | null; alerts?: Alert[]; last_verify?: { at: string; ok: number; bad: number } | null;
   sharing?: boolean; sharing_connected?: number; offline_pcs?: { id: string; name: string; state: string; text: string; files: number; bytes: number }[];
-  history: { day: string; bytes: number }[]; largest_files: { path: string; size: number }[];
+  history: { day: string; bytes: number }[]; largest_files: { id: string; path: string; size: number }[];
   largest_folders: { name: string; size: number }[]; destinations: Dest[];
 }
+/** Something that needs the owner's attention: a missing or full drive, no recent backup, a failed run. */
+export interface Alert { key: string; level: "error" | "warn"; title: string; text: string; go: string }
+export interface Suggestion { id: string; path: string; name: string; parent: string; bytes: number; score: number; reason: string }
 export interface Job { state: "idle" | "running" | "done" | "error" | "cancelled"; type: string; message: string; done: number; total: number; started?: number }
 /** Time left, worked out from how fast the job has gone so far. */
 export function eta(job: Job): string {
@@ -36,7 +39,7 @@ export function eta(job: Job): string {
 }
 export interface Settings {
   sources: string[]; destinations: string[]; excludes: string[]; max_size_mb: number; versions: number; compress: boolean;
-  schedule: { enabled: boolean; time: string; days: number[] }; auto_scan_minutes: number; webhook: string; whole_pc: boolean; scan_roots: string[]; skip_junk: boolean; new_files: "review" | "include"; junk_list: string[]; pc_name: string; data_dir: string; auth_required: boolean; update_check: boolean; deep_check: boolean;
+  schedule: { enabled: boolean; time: string; days: number[] }; auto_scan_minutes: number; webhook: string; whole_pc: boolean; scan_roots: string[]; skip_junk: boolean; new_files: "review" | "include"; junk_list: string[]; pc_name: string; data_dir: string; auth_required: boolean; update_check: boolean; deep_check: boolean; reuse_drive_copies: boolean; keep_versions: number; alert_low_space_pct: number; alert_stale_days: number;
 }
 export interface UpdateInfo { enabled: boolean; current: string; latest: string; available: boolean; can_install: boolean; page: string; notes: string; error: string }
 export interface LogRow { at: string; level: "info" | "warn" | "error"; action: string; message: string }
@@ -53,3 +56,21 @@ export function useStored<T>(key: string, init: T) {
   useEffect(() => { try { localStorage.setItem("ae:" + key, JSON.stringify(v)); } catch { /* storage unavailable */ } }, [key, v]);
   return [v, setV] as const;
 }
+export interface PreviewInfo {
+  id: string; name: string; path: string; size: number; mtime: number; gone: boolean; status: Status; backed: { dest: string; at: string }[]; from_pc: string | null; source?: string;
+  mode: "image" | "pdf" | "video" | "audio" | "text" | "table" | "pages" | "doc" | "archive" | "hex" | "none";
+  blocks?: DocBlock[]; images?: number; selected?: number; reviewed?: boolean;
+  raw?: string; reason?: string; note?: string; approximate?: boolean;
+  tags?: { title?: string; artist?: string; album?: string; year?: string; track?: string; genre?: string; cover?: string };
+  text?: string; truncated?: boolean; lines?: number;
+  sheets?: { name: string; rows: string[][]; truncated: boolean }[];
+  pages?: { title: string; lines: string[] }[];
+  entries?: { name: string; size: number }[]; total?: number; hex?: string; shown?: number;
+}
+
+/** A Word document as the server describes it: paragraphs of styled runs, lists, tables, pictures. */
+export interface DocRun { x?: string; b?: number; i?: number; u?: number; s?: number; c?: string; sz?: number; hl?: string; va?: string; f?: string; caps?: number; img?: string; w?: number; h?: number; alt?: string; br?: string }
+export type DocBlock =
+  | { t: "p"; runs: DocRun[]; h?: string; al?: string; left?: number; hang?: number; first?: number; before?: number; after?: number; label?: string; lvl?: number; box?: number }
+  | { t: "pagebreak" }
+  | { t: "table"; rows: { blocks: DocBlock[]; span: number; fill: string | null; cont: number }[][]; grid: number };

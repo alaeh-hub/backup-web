@@ -12,6 +12,11 @@ import { Network } from "./Network";
 import { SettingsTab } from "./SettingsTab";
 import { Icon, Page, reduced } from "./ui";
 import { DialogHost } from "./Dialog";
+import { PreviewHost } from "./Preview";
+import { ShortcutsHost, openShortcuts } from "./Shortcuts";
+import { clearCursor, cursorRow, focusSearch, modalOpen, moveCursor, onControl, openCursor, plain, toggleCursor, typingIn } from "./keys";
+import { Notifications } from "./Notifications";
+import { useAppearance } from "./theme";
 import { animate } from "animejs";
 
 type Tab = "dashboard" | "review" | "selected" | "files" | "restore" | "devices" | "organize" | "logs" | "settings" | "network";
@@ -28,6 +33,8 @@ const tabs: { key: Tab; label: string; icon: string; title: string; hint: string
   { key: "network", label: "Other PCs", icon: "network", title: "Other PCs", hint: "Back up another PC over your network, or let one back up this PC." },
 ];
 const idle: Job = { state: "idle", type: "", message: "", done: 0, total: 0 };
+/** g then a letter goes to a screen: g o is Overview, g n New files, and so on. */
+const CHORD: Record<string, Tab> = { o: "dashboard", n: "review", s: "selected", f: "files", r: "restore", d: "devices", z: "organize", l: "logs", t: "settings", p: "network" };
 
 function Login({ onOk }: { onOk: () => void }) {
   const [pw, setPw] = useState(""); const [err, setErr] = useState("");
@@ -48,6 +55,21 @@ function Login({ onOk }: { onOk: () => void }) {
 export default function App() {
   const [auth, setAuth] = useState<"loading" | "login" | "ok" | "error">("loading");
   const [tab, setTab] = useState<Tab>("dashboard");
+  // Where the person has been, so Alt+Left and the mouse back button can walk back (and forward again).
+  const hist = useRef<{ stack: Tab[]; at: number }>({ stack: ["dashboard"], at: 0 });
+  const goTab = useCallback((k: Tab) => {
+    const h = hist.current;
+    if (h.stack[h.at] === k) return;
+    h.stack = [...h.stack.slice(0, h.at + 1), k].slice(-40);
+    h.at = h.stack.length - 1;
+    setTab(k);
+  }, []);
+  const stepTab = useCallback((d: number) => {
+    const h = hist.current, at = h.at + d;
+    if (at < 0 || at >= h.stack.length) return;
+    h.at = at;
+    setTab(h.stack[at]);
+  }, []);
   const [stats, setStats] = useState<Stats | null>(null);
   const [job, setJob] = useState<Job>(idle);
   const [msg, setMsg] = useState("");
@@ -58,7 +80,9 @@ export default function App() {
   const [updHidden, setUpdHidden] = useState(false);
   const prev = useRef<Job["state"]>("idle");
   const logo = useRef<HTMLImageElement>(null);
+  const live = useRef({ backup: () => {}, scan: () => {}, theme: () => {}, refresh: () => {} });      // the latest actions, for the key handler
 
+  const appearance = useAppearance();
   const [appVersion, setAppVersion] = useState("");
   const checkAuth = useCallback(() => api<{ required: boolean; authed: boolean; version?: string }>("/api/auth/status").then(a => { setAppVersion(a.version ?? ""); setAuth(a.authed ? "ok" : "login"); }).catch(() => setAuth("error")), []);
   useEffect(() => { checkAuth(); const f = () => setAuth("login"); window.addEventListener("unauth", f); return () => window.removeEventListener("unauth", f); }, [checkAuth]);
@@ -89,17 +113,59 @@ export default function App() {
     return () => { a.revert(); };
   }, [auth]);
 
+  // Keyboard and mouse buttons for the whole app. The list of them is in Shortcuts.tsx (press ?).
   useEffect(() => {
     if (auth !== "ok") return;
+    let chord = 0;                                                   // when g was pressed, for g then a letter
     const onKey = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement;
-      if (e.ctrlKey || e.metaKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
-      const n = e.key === "0" ? 10 : Number(e.key);
-      if (n >= 1 && n <= tabs.length) setTab(tabs[n - 1].key);
+      if (e.defaultPrevented) return;                                // a field or menu already used this key
+      const t = e.target, key = e.key, L = live.current, mod = e.ctrlKey || e.metaKey;
+      if (key === "F1" || (key === "?" && !typingIn(t))) { e.preventDefault(); openShortcuts(); return; }
+      if (modalOpen()) return;                                       // a dialog or the preview has its own keys
+      if (mod && key === "Enter") { e.preventDefault(); L.backup(); return; }
+      if (mod && e.shiftKey && key.toLowerCase() === "s") { e.preventDefault(); L.scan(); return; }
+      if (mod && !e.shiftKey && key.toLowerCase() === "k") { e.preventDefault(); focusSearch(); return; }
+      if (e.altKey && !mod && (key === "ArrowLeft" || key === "ArrowRight")) { e.preventDefault(); stepTab(key === "ArrowLeft" ? -1 : 1); return; }
+      if (typingIn(t)) { if (key === "Escape") (t as HTMLElement).blur(); return; }
+      if (!plain(e)) return;
+      if (chord && Date.now() - chord < 1200) {
+        chord = 0;
+        const k = CHORD[key.toLowerCase()];
+        if (k) { e.preventDefault(); goTab(k); return; }
+      }
+      if (key === "g") { chord = Date.now(); return; }
+      if (key.length === 1 && key >= "0" && key <= "9") {
+        const n = key === "0" ? 10 : Number(key);
+        if (n <= tabs.length) { goTab(tabs[n - 1].key); return; }
+      }
+      const row = cursorRow();
+      if (key === "/") { e.preventDefault(); focusSearch(); }
+      else if (key === "j") { e.preventDefault(); moveCursor(1); }
+      else if (key === "k") { e.preventDefault(); moveCursor(-1); }
+      else if (row && key === "Home") { e.preventDefault(); moveCursor("first"); }
+      else if (row && key === "End") { e.preventDefault(); moveCursor("last"); }
+      else if (row && key === "Enter" && !onControl(t)) { e.preventDefault(); openCursor(); }
+      else if (row && key === "x") { e.preventDefault(); toggleCursor(); }
+      else if (key === "r") { e.preventDefault(); L.refresh(); }
+      else if (key === "t") { e.preventDefault(); L.theme(); }
+      else if (key === "Escape") clearCursor();
     };
+    const onMouse = (e: MouseEvent) => {                              // the mouse's back and forward buttons walk back through the screens
+      if (e.button !== 3 && e.button !== 4) return;
+      if (modalOpen()) return;
+      e.preventDefault();
+      if (e.type === "mouseup") stepTab(e.button === 3 ? -1 : 1);
+    };
+    const changed = () => { live.current.refresh(); };                // the preview chose or skipped a file: lists and counts catch up
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [auth]);
+    window.addEventListener("mousedown", onMouse); window.addEventListener("mouseup", onMouse); window.addEventListener("auxclick", onMouse);
+    window.addEventListener("files-changed", changed);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("mousedown", onMouse); window.removeEventListener("mouseup", onMouse); window.removeEventListener("auxclick", onMouse);
+      window.removeEventListener("files-changed", changed);
+    };
+  }, [auth, goTab, stepTab]);
 
   useEffect(() => {
     document.querySelector('.nav [aria-current="page"]')?.scrollIntoView({ inline: "center", block: "nearest", behavior: reduced() ? "auto" : "smooth" });
@@ -108,6 +174,12 @@ export default function App() {
   const busy = job.state === "running";
   const start = async (path: string) => { setMsg(""); try { await api(path, "POST"); await pollJob(); } catch (e) { setMsg("Error: " + (e as Error).message); } };
   const onJob = async () => { setMsg(""); await pollJob(); };
+  live.current = {
+    backup: () => { if (!busy && stats?.files) void start("/api/backup"); },
+    scan: () => { if (!busy) void start("/api/scan"); },
+    theme: () => appearance.setTheme(appearance.mode === "light" ? "dark" : "light"),
+    refresh: () => { void loadStats(); setTick(t => t + 1); },
+  };
 
   if (auth === "loading") return null;
   if (auth === "error") return (
@@ -125,9 +197,11 @@ export default function App() {
   return (
     <MotionConfig reducedMotion="user">
       <DialogHost />
+      <ShortcutsHost />
+      <PreviewHost />
       <div className="app">
         <aside className="side">
-          <button className="brand" onClick={() => setTab("dashboard")} aria-label="File Backup, go to the overview">
+          <button className="brand" onClick={() => goTab("dashboard")} aria-label="File Backup, go to the overview">
             <img ref={logo} className="logo" src="/static/ala-eh-logo.png" alt="" width={44} height={44} />
             <span className="brand-text"><span className="brand-name">File Backup</span><span className="brand-sub">Ala Eh! Food Products</span></span>
           </button>
@@ -137,7 +211,7 @@ export default function App() {
               return (
                 <div key={t.key} className="nav-item">
                   {(i === 0 || i === 4) && <span className="nav-label">{i === 0 ? "Backup" : "Tools"}</span>}
-                  <button aria-current={tab === t.key ? "page" : undefined} title={`${t.label} (${i + 1})`} onClick={() => setTab(t.key)}>
+                  <button aria-current={tab === t.key ? "page" : undefined} title={`${t.label} (${i + 1}, or g then ${Object.keys(CHORD).find(k => CHORD[k] === t.key)})`} onClick={() => goTab(t.key)}>
                     {tab === t.key && <motion.span layoutId="nav-pill" className="nav-pill" transition={{ type: "spring", stiffness: 520, damping: 40 }} />}
                     <Icon name={t.icon} /><span className="nav-text">{t.label}</span>
                     {!!n && <span className={"badge" + (t.key === "selected" ? " quiet" : "")}>{n > 999 ? "999+" : n.toLocaleString()}</span>}
@@ -147,18 +221,26 @@ export default function App() {
             })}
           </nav>
           <div className="side-foot">
-            <span className="k">This PC</span>
-            <b>{stats?.pc_name ?? "..."}</b>
-            {first ? (
-              <>
-                <span className="sub wrap">{first.path}</span>
-                {first.total ? <div className="meter slim" aria-hidden="true"><i style={{ transform: `scaleX(${1 - (first.free ?? 0) / first.total})` }} /></div> : null}
-                <span className="sub">{first.total ? `${fmt(first.free)} free of ${fmt(first.total)}` : "Drive not reachable"}</span>
-              </>
-            ) : <span className="sub">No backup drive set</span>}
-            <span className="sub">Last backup: {stats?.last_backup ?? "never"}</span>
-            {stats?.sharing && <span className="warn">Sharing on{stats.sharing_connected ? `: ${stats.sharing_connected} connected` : ""}</span>}
-            {appVersion && <span className="sub">Version {appVersion}</span>}
+            <div className="sf-pc"><Icon name="drive" /><span><span className="k">This PC</span><b>{stats?.pc_name ?? "..."}</b></span></div>
+            <div className="sf-drive">
+              <span className="k">Backup drive</span>
+              {first ? (
+                <>
+                  <span className="sf-path" title={first.path}><bdi>{first.path}</bdi></span>
+                  {first.total ? (
+                    <>
+                      <div className="meter slim" aria-hidden="true"><i style={{ transform: `scaleX(${1 - (first.free ?? 0) / first.total})` }} /></div>
+                      <span className="sub"><b>{fmt(first.free)}</b> free of {fmt(first.total)}</span>
+                    </>
+                  ) : <span className="warn">Drive not reachable</span>}
+                </>
+              ) : <span className="sub">No backup drive set</span>}
+            </div>
+            <dl className="sf-facts">
+              <div><dt>Last backup</dt><dd>{stats?.last_backup ?? "Never"}</dd></div>
+              {appVersion && <div><dt>Version</dt><dd>{appVersion}</dd></div>}
+            </dl>
+            {stats?.sharing && <span className="sf-share">Sharing on{stats.sharing_connected ? `, ${stats.sharing_connected} connected` : ""}</span>}
           </div>
         </aside>
 
@@ -174,9 +256,12 @@ export default function App() {
               </AnimatePresence>
             </div>
             <div className="head-actions">
+              <Notifications alerts={stats?.alerts ?? []} go={t => goTab(t as Tab)} />
+              <button aria-label={appearance.mode === "light" ? "Switch to dark mode" : "Switch to light mode"} title={appearance.mode === "light" ? "Dark mode (t)" : "Light mode (t)"} onClick={() => appearance.setTheme(appearance.mode === "light" ? "dark" : "light")}><Icon name={appearance.mode === "light" ? "moon" : "sun"} /></button>
+              <button aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)" onClick={openShortcuts}><Icon name="keyboard" /></button>
               {busy && <button onClick={() => api("/api/job/cancel", "POST").catch(e => setMsg("Error: " + (e as Error).message))}><Icon name="cancel" /><span className="hide-sm">Cancel</span></button>}
-              <button aria-label="Scan files" onClick={() => start("/api/scan")} disabled={busy}><Icon name="scan" /><span className="hide-sm">Scan files</span></button>
-              <button className="primary" onClick={() => start("/api/backup")} disabled={busy || !stats?.files}><Icon name="backup" />Back up<span className="hide-sm"> now{stats?.pending_bytes ? ` (${fmt(stats.pending_bytes)})` : ""}</span></button>
+              <button aria-label="Scan files" title="Scan files (Ctrl+Shift+S)" onClick={() => start("/api/scan")} disabled={busy}><Icon name="scan" /><span className="hide-sm">Scan files</span></button>
+              <button className="primary" title="Back up now (Ctrl+Enter)" onClick={() => start("/api/backup")} disabled={busy || !stats?.files}><Icon name="backup" />Back up<span className="hide-sm"> now{stats?.pending_bytes ? ` (${fmt(stats.pending_bytes)})` : ""}</span></button>
             </div>
           </header>
 
@@ -184,7 +269,7 @@ export default function App() {
             {stats?.offline_pcs?.map(o => (
               <div key={o.id} className="update away" role="status">
                 <p><b>{o.name} cannot be reached.</b> <span className="sub">{o.text} Its {o.files.toLocaleString()} files ({fmt(o.bytes)}) are from the last scan and cannot be backed up until it is back.</span></p>
-                <div className="update-actions"><button onClick={() => setTab("network")}>Open Other PCs</button></div>
+                <div className="update-actions"><button onClick={() => goTab("network")}>Open Other PCs</button></div>
               </div>
             ))}
             {upd?.available && !updHidden && (
@@ -202,7 +287,7 @@ export default function App() {
             )}
             {!busy && msg && <p className="msg" role="status">{msg}</p>}
             <Page key={["review", "selected", "files", "restore"].includes(tab) ? tab + ":" + tick : tab}>
-              {tab === "dashboard" && <Dashboard stats={stats} busy={busy} go={setTab} onJob={onJob} />}
+              {tab === "dashboard" && <Dashboard stats={stats} busy={busy} go={goTab} onJob={onJob} />}
               {tab === "review" && <Review onChange={loadStats} />}
               {tab === "selected" && <Review mode="selected" onChange={loadStats} />}
               {tab === "files" && <Files onChange={loadStats} />}
@@ -210,7 +295,7 @@ export default function App() {
               {tab === "devices" && <Devices />}
               {tab === "organize" && <Organize busy={busy} onJob={onJob} />}
               {tab === "logs" && <Logs tick={tick} />}
-              {tab === "settings" && <SettingsTab onSaved={loadStats} />}
+              {tab === "settings" && <SettingsTab onSaved={loadStats} appearance={appearance} />}
               {tab === "network" && <Network />}
             </Page>
           </main>
