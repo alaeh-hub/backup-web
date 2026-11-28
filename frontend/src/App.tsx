@@ -12,6 +12,7 @@ import { Network } from "./Network";
 import { SettingsTab } from "./SettingsTab";
 import { Icon, Page, reduced } from "./ui";
 import { DialogHost } from "./Dialog";
+import { NamePc, namedMessage, NameResult } from "./NamePc";
 import { PreviewHost } from "./Preview";
 import { ShortcutsHost, openShortcuts } from "./Shortcuts";
 import { clearCursor, cursorRow, focusSearch, modalOpen, moveCursor, onControl, openCursor, plain, toggleCursor, typingIn } from "./keys";
@@ -78,6 +79,9 @@ export default function App() {
   const [updating, setUpdating] = useState(false);
   const [updErr, setUpdErr] = useState("");
   const [updHidden, setUpdHidden] = useState(false);
+  const [named, setNamed] = useState(false);                      // the name was just saved: hide the first-run dialog before the next stats arrive
+  const [renaming, setRenaming] = useState(false);
+  useEffect(() => { const open = () => setRenaming(true); window.addEventListener("rename-pc", open); return () => window.removeEventListener("rename-pc", open); }, []);
   const prev = useRef<Job["state"]>("idle");
   const logo = useRef<HTMLImageElement>(null);
   const live = useRef({ backup: () => {}, scan: () => {}, theme: () => {}, refresh: () => {} });      // the latest actions, for the key handler
@@ -193,10 +197,21 @@ export default function App() {
   const cur = tabs.find(t => t.key === tab)!;
   const badge = (k: Tab) => k === "review" ? stats?.review_files : k === "selected" ? stats?.selected_files : 0;
   const first = stats?.destinations[0];
+  const firstRun = !!stats && stats.pc_named === false && !named;
 
   return (
     <MotionConfig reducedMotion="user">
       <DialogHost />
+      <AnimatePresence>
+        {(firstRun || renaming) && stats && (
+          <NamePc key="name-pc" mode={firstRun ? "first" : "rename"} current={stats.pc_name} drive={stats.destinations[0]?.path}
+            onCancel={() => setRenaming(false)}
+            onDone={(r: NameResult) => {
+              setMsg(namedMessage(r, firstRun)); setNamed(true); setRenaming(false); loadStats();
+              window.dispatchEvent(new CustomEvent("pc-renamed", { detail: r.name }));
+            }} />
+        )}
+      </AnimatePresence>
       <ShortcutsHost />
       <PreviewHost />
       <div className="app">
@@ -287,7 +302,7 @@ export default function App() {
             )}
             {!busy && msg && <p className="msg" role="status">{msg}</p>}
             <Page key={["review", "selected", "files", "restore"].includes(tab) ? tab + ":" + tick : tab}>
-              {tab === "dashboard" && <Dashboard stats={stats} busy={busy} go={goTab} onJob={onJob} />}
+              {tab === "dashboard" && <Dashboard stats={stats} busy={busy} jobType={job.type} go={goTab} onJob={onJob} />}
               {tab === "review" && <Review onChange={loadStats} />}
               {tab === "selected" && <Review mode="selected" onChange={loadStats} />}
               {tab === "files" && <Files onChange={loadStats} />}

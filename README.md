@@ -59,6 +59,11 @@ Other parts:
 - **Devices** lists every PC that has a folder on the backup drive. Each PC is recognised by an ID file, so two
   PCs with the same name never share a folder. The drive itself is remembered by its serial number and is found
   again if Windows gives it another letter.
+- **PC name:** the first time the app opens on a PC it asks "What should we call this PC?". The name you type is shown in the app and is
+  the PC's folder on the backup drive (the dialog shows the folder as you type, and warns if another PC already uses the name). A PC that
+  was already in use keeps its name and is not asked. Settings > Backup > "Rename this PC" changes it later and renames the folder on the
+  drive too. A drive that is unplugged, a folder Windows has open, or a running backup only delays that: backups find the folder by the ID
+  file inside it, never by its name, and the rename is retried at the start of each backup. Another PC's folder is never touched.
 - **Restore** puts files back in their original place or another folder, including files deleted from the PC.
 - **Verify** re-checks backed up copies. **Organize** gathers documents, pictures and videos into one sorted folder.
 - **Compare file contents** (Settings): normally a file counts as unchanged when its size and date match. Turn this on to also
@@ -166,7 +171,7 @@ Work on a branch and open a pull request; do not push to `main` directly. Bump t
 `.github/workflows/release.yml` reads the version from `frontend/package.json`. If there is no release for it yet,
 it builds the installer on Windows, tags `vX.Y.Z` and publishes `AlaEhBackup-Setup.exe` and `AlaEhBackup.exe` as a
 GitHub Release. If the version was not bumped, nothing is released. You can also run it by hand from the Actions
-tab to get the files as a downloadable artifact. See `AGENTS.md` for the rules AI assistants follow in this repo.
+tab to get the files as a downloadable artifact. See `docs/AGENTS.md` for the rules AI assistants follow in this repo.
 
 ### Continuous integration
 
