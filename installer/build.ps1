@@ -1,6 +1,6 @@
 # Builds the Windows installer: frontend -> AlaEhBackup.exe (PyInstaller) -> AlaEhBackup-Setup.exe (Inno Setup).
 # Run from the repo root:  powershell -ExecutionPolicy Bypass -File installer\build.ps1
-param([string]$Version = "1.7.0")
+param([string]$Version = "1.8.0")
 $ErrorActionPreference = "Stop"
 $Version = $Version.TrimStart("v")
 $root = Split-Path $PSScriptRoot -Parent

@@ -59,6 +59,10 @@ Other parts:
 - **Devices** lists every PC that has a folder on the backup drive. Each PC is recognised by an ID file, so two
   PCs with the same name never share a folder. The drive itself is remembered by its serial number and is found
   again if Windows gives it another letter.
+  If a *different* disk is on the remembered location (a new drive, or one that was reformatted), backups pause so nothing goes to
+  the wrong disk, and Overview, Settings and the bell offer **Use this drive**: after one confirmation the new disk's serial is
+  remembered, every file counts as not backed up there, and the next backup copies to it (copies already in place are kept, not written
+  twice). A drive that is simply unplugged is not offered: plug it in.
 - **PC name:** the first time the app opens on a PC it asks "What should we call this PC?". The name you type is shown in the app and is
   the PC's folder on the backup drive (the dialog shows the folder as you type, and warns if another PC already uses the name). A PC that
   was already in use keeps its name and is not asked. Settings > Backup > "Rename this PC" changes it later and renames the folder on the

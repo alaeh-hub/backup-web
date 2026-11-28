@@ -3,6 +3,7 @@ import { api, fmt, Stats } from "./api";
 import { CountUp, FileIcon, Icon, useGrow } from "./ui";
 import { PreviewButton } from "./Preview";
 import { tell } from "./Dialog";
+import { UseDrive } from "./UseDrive";
 
 type Go = (t: "settings" | "files" | "review" | "selected") => void;
 const LEG: Record<string, string> = { done: "var(--color-ink-2)", pend: "var(--color-accent)", review: "var(--color-review)", skip: "var(--color-skip)" };
@@ -83,6 +84,7 @@ export function Dashboard({ stats, busy, jobType = "backup", go, onJob }: { stat
                   <div className="line"><Icon name="drive" /><span className="path" title={d.path}><bdi>{d.path}</bdi></span>{d.label && <span className="sub">{d.label}</span>}</div>
                   <span className={low ? "warn" : "sub"}>{d.total ? `${fmt(d.free)} free of ${fmt(d.total)}` : "Not reachable"}{low ? ". Not enough room for what is waiting." : ""}</span>
                   {d.total ? <div className="meter" aria-hidden="true"><i style={{ transform: `scaleX(${used})` }} /></div> : null}
+                  {d.new_drive && <UseDrive compact path={d.path} name={d.new_drive.name} onDone={() => window.dispatchEvent(new Event("files-changed"))} />}
                 </li>
               );
             })}

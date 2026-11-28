@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, Settings, UpdateInfo, useStored } from "./api";
 import { Cluster, Group, Panel, Row, Switch } from "./Panel";
 import { PathList } from "./PathList";
+import { UseDrive } from "./UseDrive";
 import { Select, TimeField } from "./Select";
 import { Density, ThemePref, useAppearance } from "./theme";
 
@@ -81,6 +82,7 @@ export function SettingsTab({ onSaved, appearance }: { onSaved: () => void; appe
           <Cluster title="Where backups go">
             <Row wide title="Backup drives" desc="Files are copied to every drive listed, for example an external disk. A drive is remembered by its serial number, so it is found again if Windows gives it another letter.">
               <PathList bare title="Backup drives" hint="" items={s.destinations} onChange={v => set({ destinations: v })} />
+              {s.new_drives?.map(n => <UseDrive key={n.path} path={n.path} name={n.name} onDone={() => { setAgain(c => c + 1); onSaved(); }} />)}
             </Row>
             <Row title={`This PC: ${s.pc_name}`} desc="Backups go into a folder named after this PC on each drive, so many PCs can share one drive. Renaming also renames that folder on the drive.">
               <button onClick={() => window.dispatchEvent(new Event("rename-pc"))}>Rename this PC</button>
