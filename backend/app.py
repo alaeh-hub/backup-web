@@ -263,6 +263,37 @@ def volume_info(path):
         return None
 
 
+def drive_change(d):
+    """A different drive than the remembered one is on this backup location right now: {'name': its label}, else None.
+    (A drive that is simply not plugged in is not a change: there is nothing to switch to.)"""
+    saved, info = SETTINGS.get("dest_vols", {}).get(d), volume_info(d)
+    if saved and info and info[1] != saved:
+        return {"name": info[0]}
+    return None
+
+
+def use_new_drive(d):
+    """The person confirmed that the drive now on `d` is the backup drive from here on. Its serial replaces the old one,
+    and every file stops counting as backed up there, so the next backup copies to it from the start. A copy that is
+    already in its place on the drive (a drive that was reformatted but still holds the files) is found and kept."""
+    info = volume_info(d)
+    if not info:
+        raise ValueError("That drive is not connected right now.")
+    with LOCK:
+        SETTINGS.setdefault("dest_vols", {})[d] = info[1]
+        n = 0
+        for f in list(INDEX.values()) + list(GONE.values()):
+            if d in (f.get("backed") or {}):
+                f["backed"].pop(d)
+                n += 1
+        _PCF.clear()
+        mark()
+    write_json("settings.json", SETTINGS)
+    write_json("gone.json", GONE)
+    log("info", "settings", f"{d} is now the backup drive ({info[0] or 'no name'}). {n:,} files will be copied to it again.")
+    return n
+
+
 _RESOLVED = [0.0]
 
 
@@ -1350,7 +1381,10 @@ def backup_job(trigger="manual", scan_first=False):
         raise RuntimeError("No backup destination is set. Add one in Settings.")
     for d in ds:
         saved, info = SETTINGS.get("dest_vols", {}).get(d), volume_info(d)
-        if saved and (not info or info[1] != saved):
+        if saved and info and info[1] != saved:
+            raise RuntimeError(f"A different drive is on {d} than the one used before. If it is your new backup drive, "
+                               "open Settings > Backup drives and choose Use this drive.")
+        if saved and not info:
             raise RuntimeError(f"The backup drive is not connected: {d} is missing or is a different drive.")
     for d in ds:
         try:
@@ -1890,7 +1924,8 @@ def clean_settings(b):
 @app.get("/api/settings")
 def get_settings():
     return jsonify({**SETTINGS, "data_dir": str(DATA), "auth_required": bool(PASSWORD), "junk_list": JUNK, "scan_roots": sources(),
-                    "pc_name": PC["name"]})
+                    "pc_name": PC["name"],
+                    "new_drives": [{"path": d, **c} for d in SETTINGS["destinations"] if (c := drive_change(d))]})
 
 
 @app.post("/api/settings")
@@ -1905,6 +1940,23 @@ def set_settings():
     write_json("settings.json", SETTINGS)
     log("info", "settings", "Settings saved")
     return get_settings()
+
+
+@app.post("/api/destinations/use-new")
+def use_new_drive_route():
+    """Accept the drive that is now on a backup location in place of the one remembered there."""
+    d = str((request.json or {}).get("path") or "")
+    if d not in SETTINGS["destinations"]:
+        return jsonify(error="That is not one of the backup drives."), 400
+    if JOB["state"] == "running":
+        return jsonify(error="A scan or backup is running. Try again when it has finished."), 409
+    if not drive_change(d):
+        return jsonify(error="Nothing to change: the drive on that location is the one that was used before."), 400
+    try:
+        n = use_new_drive(d)
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    return jsonify(path=d, files=n)
 
 
 @app.get("/api/pc/preview")
@@ -2722,6 +2774,10 @@ def compute_alerts(core):
     ds, out = SETTINGS["destinations"], []
     for d in ds:
         info, saved = volume_info(d), SETTINGS.get("dest_vols", {}).get(d)
+        if saved and info and info[1] != saved:
+            out.append(dict(key="drive:" + d, level="error", title="A different drive is on the backup location",
+                            text=f"{d} is now a drive called {info[0] or 'with no name'}, not the one used before. If it is your new backup drive, choose Use this drive in Settings.", go="settings"))
+            continue
         if (saved and (not info or info[1] != saved)) or existing_ancestor(d) is None:
             out.append(dict(key="drive:" + d, level="error", title="Backup drive not connected",
                             text=f"{d} cannot be found. Plug the drive in so the next backup can run.", go="settings"))
@@ -2783,7 +2839,7 @@ def stats():
     ds = SETTINGS["destinations"]
     r = dict(memo(("stats", tuple(ds)), _stats_core))
     r["destinations"] = [{"path": d, "pc_folder": pc_folder(d), "label": (volume_info(d) or ("", ""))[0],
-                          **(disk(d) or {"free": None, "total": None})} for d in ds]
+                          "new_drive": drive_change(d), **(disk(d) or {"free": None, "total": None})} for d in ds]
     r["last_backup"] = META.get("last_backup")
     r["next_run"] = next_run()
     r["alerts"] = compute_alerts(r)

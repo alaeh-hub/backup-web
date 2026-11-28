@@ -14,7 +14,7 @@ export const label: Record<Status, string> = { new: "New", modified: "Modified",
 export interface FileRow { id: string; path: string; size: number; mtime: number; selected: number; review: boolean; status: Status }
 export interface Device { folder: string; name: string; user: string; first_backup: string | null; last_backup: string | null; backed_up_by?: string[]; this_pc: boolean }
 export interface DeviceDrive { dest: string; reachable: boolean; label: string; devices: Device[] }
-export interface Dest { path: string; label?: string; pc_folder?: string; free: number | null; total: number | null }
+export interface Dest { path: string; label?: string; new_drive?: { name: string } | null; pc_folder?: string; free: number | null; total: number | null }
 export interface Stats {
   files: number; total_bytes: number; selected_files: number; selected_bytes: number; pending_files: number; pending_bytes: number;
   backed_files: number; backed_bytes: number; new_files: number; review_files: number; review_bytes: number; skipped_files: number; skipped_bytes: number; pc_name: string; pc_named?: boolean; last_backup: string | null; next_run: string | null; alerts?: Alert[]; last_verify?: { at: string; ok: number; bad: number } | null;
@@ -39,7 +39,7 @@ export function eta(job: Job): string {
 }
 export interface Settings {
   sources: string[]; destinations: string[]; excludes: string[]; max_size_mb: number; versions: number; compress: boolean;
-  schedule: { enabled: boolean; time: string; days: number[] }; auto_scan_minutes: number; webhook: string; whole_pc: boolean; scan_roots: string[]; skip_junk: boolean; new_files: "review" | "include"; junk_list: string[]; pc_name: string; data_dir: string; auth_required: boolean; update_check: boolean; deep_check: boolean; reuse_drive_copies: boolean; keep_versions: number; alert_low_space_pct: number; alert_stale_days: number;
+  schedule: { enabled: boolean; time: string; days: number[] }; auto_scan_minutes: number; webhook: string; whole_pc: boolean; scan_roots: string[]; skip_junk: boolean; new_files: "review" | "include"; junk_list: string[]; pc_name: string; new_drives?: { path: string; name: string }[]; data_dir: string; auth_required: boolean; update_check: boolean; deep_check: boolean; reuse_drive_copies: boolean; keep_versions: number; alert_low_space_pct: number; alert_stale_days: number;
 }
 export interface UpdateInfo { enabled: boolean; current: string; latest: string; available: boolean; can_install: boolean; page: string; notes: string; error: string }
 export interface LogRow { at: string; level: "info" | "warn" | "error"; action: string; message: string }

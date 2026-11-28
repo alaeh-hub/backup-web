@@ -324,7 +324,7 @@ summary:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2
 
 .dialog-back { position: fixed; inset: 0; z-index: var(--z-modal); display: grid; place-items: center; padding: var(--space-md); background: color-mix(in oklab, var(--color-paper) 72%, transparent); backdrop-filter: blur(6px); }
 .dialog { width: min(100%, 26rem); display: grid; gap: var(--space-lg); padding: var(--space-lg); border: 1px solid var(--color-rule); border-radius: 0; background: var(--color-paper-2); }
-.dialog p { margin: 0; max-width: none; font-size: var(--text-lg); line-height: 1.4; }
+.dialog p { white-space: pre-line; margin: 0; max-width: none; font-size: var(--text-lg); line-height: 1.4; }
 .dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-xs); }
 
 /* ---------- name this PC: asked once on a new install, and from Settings to rename ---------- */
@@ -830,3 +830,8 @@ tr[data-kb] td, tr[data-kb] th { background: transparent; }
 .pv-media img { transition: transform var(--dur-short) var(--ease-out); }
 @media (max-width: 720px) { .pv-keys { display: none; } .pv.full { height: 100dvh; } }
 @media (prefers-reduced-motion: reduce) { .pv-media img { transition: none; } }
+
+/* ---------- a different drive on the backup location: say so, and offer to use it ---------- */
+.use-drive { display: grid; justify-items: start; gap: var(--space-xs); margin-top: var(--space-sm); padding: var(--space-sm) var(--space-md); border: 1px solid var(--color-review); }
+.use-drive p { margin: 0; max-width: 60ch; font-size: var(--text-sm); }
+.use-drive.compact { padding: var(--space-xs) var(--space-sm); }
