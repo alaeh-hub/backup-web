@@ -554,11 +554,12 @@ def existing_folder(dest, pid):
 def folder_taken(dest, name):
     """True when a folder for `name` already exists on `dest` and it is not this PC's own."""
     own = existing_folder(dest, PC["id"])
-    p = Path(dest) / _folder_name(name)
-    try:
-        return p.exists() and (own is None or p.name.lower() != own.lower())
+    want = _folder_name(name).lower()
+    try:                                               # compared without case: Windows drives treat Sales and sales as one folder
+        names = {e.name.lower() for e in os.scandir(dest)}
     except OSError:
         return False
+    return want in names and (own is None or want != own.lower())
 
 
 def sync_folder_names(ds=None):
