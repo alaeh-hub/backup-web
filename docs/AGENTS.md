@@ -8,6 +8,8 @@ Windows installer built with PyInstaller + Inno Setup (`installer/`). The backen
 are backed up, so the installer is the real deployment. Vercel (`vercel.json`) only hosts the UI and the
 "Install for Windows" download button.
 
+For merging a branch into local `main`, pulling the latest `main`, or fixing merge conflicts, read `MERGE.md` (in this folder) first.
+
 ## Rules
 
 ### 0. Never push directly to `main`
@@ -32,7 +34,30 @@ When bumping:
    `AlaEhBackup-Setup.exe`, creates the tag `vX.Y.Z` and publishes the GitHub Release. If you forgot to bump the
    version, nothing is released. The site's Install button downloads
    `releases/latest/download/AlaEhBackup-Setup.exe`, so the file name must not change.
-5. Mention the new version in your final message to the user.
+5. End your final message with this short block, in this exact form, and keep the rest of the message short and plain:
+
+   ```
+   Version: X.Y.Z
+   Install new installer?: No
+   Old installed version still works?: Yes, installers 1.2.4 to X.Y.Z
+   ```
+
+   Answer `Install new installer?` with just Yes or No, adding one short reason only when it is Yes (for example
+   `Install new installer?: Yes, the installer itself changed`). `Old installed version still works?` is Yes or No plus the
+   range of installer versions it covers: the oldest one that still works, then `to` the new version.
+6. How to decide `Install new installer?`:
+   - Normally **No**. Installed copies update themselves from the GitHub release (`backend/updater.py`), and old versions
+     keep working until they update.
+   - **Yes** only when the change touches what the self-update cannot fix: `installer/setup.iss` (install folder,
+     shortcuts, the kill-and-reopen logic, uninstall), the updater itself (`backend/updater.py`, `/api/update`), or a
+     change that makes old and new versions unable to talk to each other (wireless backup protocol or certificates in
+     `pki.py`, `agent.py`, `remote.py`; the layout of data on the backup drive).
+   - `Old installed version still works?` is **No** only in that last case, otherwise **Yes**.
+   - The oldest installer version that still works is the **compatibility floor**. It is `1.2.4` (the first version whose
+     self-update reliably closes, replaces and reopens the app; older ones must be reinstalled by hand once). When a change
+     breaks old versions (the last case above), the new floor is the version you are releasing: write
+     `No, only installers X.Y.Z and newer` and raise the floor in this file to X.Y.Z, so the next answer starts from it.
+   - If you are not sure, answer `Not sure` and say in one line what you could not check.
 
 ### 2. Never add yourself as a co-author
 Do not add `Co-Authored-By:` lines (or "Generated with Claude" style footers) to commit messages or PR
@@ -68,6 +93,12 @@ build output, local state, secrets or machine-specific (for example `installer/o
 - Dev ports: backend 5001, Vite dev server 5174 (`FRONTEND_PORT` overrides). Keep `app.py`,
   `backend/app.py` and `frontend/vite.config.ts` in sync if you change it.
 - Run `python -m pytest backend/tests -q` before pushing; all tests must pass.
+- Keep the tests up to date in the same commit as the change: a new behavior gets a new test in `backend/tests/`, a changed
+  behavior gets its existing test updated (never deleted or loosened just to make it pass), and a fixed bug gets a test that
+  fails without the fix. If a change cannot be tested, say why in the final message.
+- Keep the workflows up to date too (`.github/workflows/ci.yml`, `release.yml`). When a change adds a build step, a
+  dependency, a new test folder, a new file the build needs, or changes a path, command, Python or Node version, update the
+  workflows to match in the same commit, so CI and the release build keep passing. Do not edit a workflow otherwise.
 - Rebuild the installer locally with `powershell -ExecutionPolicy Bypass -File installer\build.ps1`.
 - Do not open a PR, tag or publish a release unless the user asked you to. Do not push at all until the work is committed and tested.
 - Keep `README.md` in step with behavior changes (install, run, build, release) in the same commit.
