@@ -102,9 +102,12 @@ JUNK = [
 
 def _load_pc():
     pc = read_json("pc.json", {})
-    if not pc.get("id"):
+    fresh = not pc.get("id")
+    if fresh:
         pc = {"id": uuid.uuid4().hex}
     pc["name"] = pc.get("name") or platform.node() or "PC"
+    if "named" not in pc:
+        pc["named"] = not fresh            # a PC that was in use before the app asked for a name keeps its name and is not asked
     write_json("pc.json", pc)
     return pc
 
@@ -514,6 +517,85 @@ def folder_for(dest, pid, name, user="", create=False):
 def pc_folder(dest, create=False):
     """Folder name for this PC on `dest`."""
     return folder_for(dest, PC["id"], PC["name"], os.environ.get("USERNAME", ""), create)
+
+
+MAX_PC_NAME = 40
+
+
+def clean_pc_name(raw):
+    """The name the person typed, tidied (one space between words), or a ValueError that says what to fix."""
+    name = re.sub(r"\s+", " ", str(raw or "")).strip()
+    if not name:
+        raise ValueError("Type a name for this PC.")
+    if len(name) > MAX_PC_NAME:
+        raise ValueError(f"Use {MAX_PC_NAME} characters or fewer.")
+    if any(ord(c) < 32 for c in name) or not re.search(r"\w", name):
+        raise ValueError("Use letters or numbers in the name.")
+    return name
+
+
+def existing_folder(dest, pid):
+    """The name of the folder on `dest` that belongs to the PC with this id, or None when it has none there yet."""
+    try:
+        kids = [e for e in os.scandir(dest) if not e.name.startswith(".")]
+    except OSError:
+        return None
+    for e in kids:
+        try:
+            if e.is_dir(follow_symlinks=False):
+                data = read_json_at(Path(e.path) / "pc-id.json")
+                if isinstance(data, dict) and data.get("id") == pid:
+                    return e.name
+        except OSError:
+            continue
+    return None
+
+
+def folder_taken(dest, name):
+    """True when a folder for `name` already exists on `dest` and it is not this PC's own."""
+    own = existing_folder(dest, PC["id"])
+    p = Path(dest) / _folder_name(name)
+    try:
+        return p.exists() and (own is None or p.name.lower() != own.lower())
+    except OSError:
+        return False
+
+
+def sync_folder_names(ds=None):
+    """Make this PC's folder on each connected drive carry the PC's current name. A drive that is not plugged in, or a
+    folder Windows has open, is left as it is and tried again at the start of the next backup: the folder is found by
+    the id inside it, so a backup never depends on the name. Another PC's folder is never touched.
+    Returns (renamed, pending): the drives that now match, and the drives still using the old folder name."""
+    renamed, pending = [], []
+    for d in (SETTINGS["destinations"] if ds is None else ds):
+        if not os.path.isdir(d):
+            pending.append(d)
+            continue
+        cur = existing_folder(d, PC["id"])
+        if cur is None:
+            continue                                   # nothing of this PC there yet: its folder starts with the new name
+        want = _folder_name(PC["name"])
+        picked = next((c for c in (want, f"{want}-{PC['id'][:6]}")
+                       if c.lower() == cur.lower() or not (Path(d) / c).exists()), None)
+        try:
+            if picked is None:
+                raise OSError("a folder with that name is already on the drive")
+            if picked != cur:
+                os.rename(Path(d) / cur, Path(d) / picked)
+                old_v, new_v = Path(d) / ".versions" / cur, Path(d) / ".versions" / picked
+                if old_v.is_dir() and not new_v.exists():
+                    os.rename(old_v, new_v)
+            idf = Path(d) / picked / "pc-id.json"
+            data = read_json_at(idf)
+            if isinstance(data, dict) and data.get("name") != PC["name"]:
+                data["name"] = PC["name"]
+                write_json_at(idf, data)
+            renamed.append(d)
+        except OSError as e:
+            log("warn", "settings", f"Could not rename this PC's folder on {d} to {picked or want}: {e}. It keeps working under its old name.")
+            pending.append(d)
+    _PCF.clear()
+    return renamed, pending
 
 
 def peer_folder(dest, r, create=False):
@@ -1259,6 +1341,7 @@ def backup_job(trigger="manual", scan_first=False):
     _PCF.clear()                       # re-check which folder on the drive belongs to this PC
     _TOUCHED.clear()
     refresh_destinations(True)
+    sync_folder_names()                # a rename made while the drive was away or a job was running catches up here
     if scan_first:
         scan_job()
     ds = list(SETTINGS["destinations"])
@@ -1821,6 +1904,39 @@ def set_settings():
     write_json("settings.json", SETTINGS)
     log("info", "settings", "Settings saved")
     return get_settings()
+
+
+@app.get("/api/pc/preview")
+def pc_name_preview():
+    """What a name would become on the drive, while it is being typed: the tidied name, the folder, and whether another PC
+    already has a folder with that name."""
+    try:
+        name = clean_pc_name(request.args.get("name", ""))
+    except ValueError as e:
+        return jsonify(ok=False, error=str(e))
+    taken = any(folder_taken(d, name) for d in SETTINGS["destinations"] if os.path.isdir(d))
+    return jsonify(ok=True, name=name, folder=_folder_name(name), taken=taken)
+
+
+@app.post("/api/pc/name")
+def set_pc_name():
+    """Name this PC (the first time) or rename it. The name is what the app and other PCs show, and the folder this PC
+    gets on the backup drive follows it."""
+    try:
+        name = clean_pc_name((request.json or {}).get("name"))
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    old = PC["name"]
+    with LOCK:
+        PC["name"], PC["named"] = name, True
+        mark()
+    write_json("pc.json", PC)
+    if JOB["state"] == "running":
+        renamed, pending = [], list(SETTINGS["destinations"])          # a backup is writing into the folder: it is renamed at the next one
+    else:
+        renamed, pending = sync_folder_names()
+    log("info", "settings", f"This PC is now called {name}" + (f" (was {old})" if old != name else ""))
+    return jsonify(name=name, folder=_folder_name(name), renamed=renamed, pending=pending)
 
 
 EXIT_HOOK = None          # set by backend/desktop.py: closes the native window so the whole exe exits normally
@@ -2563,7 +2679,7 @@ def _stats_core():
         fl = list(INDEX.values())
     r = dict(files=len(fl), total_bytes=0, selected_files=0, selected_bytes=0, pending_files=0,
              pending_bytes=0, backed_files=0, backed_bytes=0, new_files=0, review_files=0, review_bytes=0,
-             skipped_files=0, skipped_bytes=0, pc_name=PC["name"])
+             skipped_files=0, skipped_bytes=0, pc_name=PC["name"], pc_named=bool(PC.get("named")))
     folders_ = {}
     for f in fl:
         s, sz = status(f, ds), f["size"]

@@ -265,6 +265,10 @@ details summary { cursor: pointer; }
 
 .all-done { display: flex; align-items: center; gap: var(--space-xs); margin: 0; color: var(--color-accent-text); font-weight: 700; }
 .all-done .ico { width: 20px; height: 20px; }
+.chatter { margin: 0; color: var(--color-accent-text); font-weight: 600; min-height: 1.5em; }
+.chatter span { display: inline-block; animation: chatter-in 0.5s ease both; }
+@keyframes chatter-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .chatter span { animation: none; } }
 
 
 /* ---------- our own scrollbars, drop-downs, ticks, steppers and dialogs ---------- */
@@ -322,6 +326,38 @@ summary:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2
 .dialog { width: min(100%, 26rem); display: grid; gap: var(--space-lg); padding: var(--space-lg); border: 1px solid var(--color-rule); border-radius: 0; background: var(--color-paper-2); }
 .dialog p { margin: 0; max-width: none; font-size: var(--text-lg); line-height: 1.4; }
 .dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-xs); }
+
+/* ---------- name this PC: asked once on a new install, and from Settings to rename ---------- */
+.name-dialog { width: min(100%, 36rem); max-height: 100%; overflow-y: auto; display: grid; gap: var(--space-lg); padding: var(--space-xl); border: 1px solid var(--color-rule); border-radius: 0; background: var(--color-paper-2); }
+.name-logo { width: 44px; height: 44px; }
+.name-head { display: grid; gap: var(--space-xs); }
+.name-head h2 { max-width: 18ch; overflow-wrap: break-word; font-size: var(--text-display); line-height: 1.1; letter-spacing: var(--tracking-display); }
+.name-head p { margin: 0; max-width: 40ch; color: var(--color-ink-2); font-size: var(--text-md); line-height: 1.5; }
+.name-field { display: grid; gap: var(--space-2xs); min-width: 0; }
+.name-field-top { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-md); }
+.name-count { color: var(--color-muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.name-count.near { color: var(--color-review-text); font-weight: 600; }
+.name-line { position: relative; min-width: 0; }
+.name-line::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--color-accent-line); transform: scaleX(0); transform-origin: left; transition: transform var(--dur-long) var(--ease-out); pointer-events: none; }
+.name-line:focus-within::after { transform: scaleX(1); }
+.name-field input.name-input[type="text"] { width: 100%; min-height: 64px; padding: 0; border-bottom: 1px solid var(--color-muted); font: 700 clamp(1.5rem, 5vw, 2.1rem)/1.2 var(--font-display); letter-spacing: var(--tracking-display); }
+.name-field input.name-input[type="text"]::placeholder { font-weight: 500; letter-spacing: 0; }
+.name-field input.name-input[type="text"]:focus-visible { outline: none; border-bottom-color: transparent; }
+.name-field input.name-input[aria-invalid="true"] { border-bottom-color: var(--color-error); }
+.name-path { display: flex; align-items: center; gap: var(--space-sm); min-width: 0; padding: var(--space-sm) var(--space-md); border: 1px solid var(--color-rule); background: var(--color-paper); }
+.name-path .ico { color: var(--color-accent-text); }
+.name-path-text { display: grid; gap: var(--space-3xs); min-width: 0; }
+.name-path-folder { font: 800 var(--text-lg)/1.3 var(--font-body); overflow-wrap: anywhere; animation: name-in var(--dur-short) var(--ease-out) both; }
+.name-path.empty .name-path-folder { color: var(--color-muted); font-weight: 500; }
+@keyframes name-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.name-note { min-height: 1.5em; }
+.name-note p { margin: 0; max-width: none; font-size: var(--text-sm); }
+.name-ideas { display: flex; flex-wrap: wrap; gap: var(--space-xs); }
+.name-ideas button { min-height: 34px; padding: 0 var(--space-sm); color: var(--color-ink-2); font-size: var(--text-sm); }
+.name-ideas button.on { border-color: var(--color-accent-line); color: var(--color-ink); }
+.name-actions { align-items: center; justify-content: flex-end; }
+@media (max-width: 40rem) { .name-dialog { padding: var(--space-md); } .name-actions { flex-direction: column-reverse; align-items: stretch; } }
+@media (prefers-reduced-motion: reduce) { .name-line::after { transition: none; } .name-path-folder { animation: none; } }
 
 /* ---------- responsive: each section reacts to its own width, and touch screens get 44px targets ---------- */
 .page { container-type: inline-size; }

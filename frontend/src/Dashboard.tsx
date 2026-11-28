@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { api, fmt, Stats } from "./api";
 import { CountUp, FileIcon, Icon, useGrow } from "./ui";
 import { PreviewButton } from "./Preview";
@@ -6,7 +7,20 @@ import { tell } from "./Dialog";
 type Go = (t: "settings" | "files" | "review" | "selected") => void;
 const LEG: Record<string, string> = { done: "var(--color-ink-2)", pend: "var(--color-accent)", review: "var(--color-review)", skip: "var(--color-skip)" };
 
-export function Dashboard({ stats, busy, go, onJob }: { stats: Stats | null; busy: boolean; go: Go; onJob: () => void }) {
+const SCAN_LINES = ["Looking through your folders...", "Counting every file, one by one...", "Peeking into the corners of your PC...", "Sorting the new from the old...", "Almost everything gets noticed. Hang tight."];
+const BACKUP_LINES = ["Copying your files to a safe place...", "Your memories are getting a second home...", "Sit back, this is a good time for a stretch.", "Big files take a little longer. Worth it!", "Checking every copy while it is written...", "Future you will say thanks.", "Still going. Nothing is lost along the way."];
+
+function Chatter({ type }: { type: string }) {
+  const lines = type === "scan" ? SCAN_LINES : BACKUP_LINES;
+  const [i, setI] = useState(() => Math.floor(Math.random() * lines.length));
+  useEffect(() => {
+    const t = setInterval(() => setI(n => (n + 1) % lines.length), 4500);
+    return () => clearInterval(t);
+  }, [lines]);
+  return <p className="chatter" role="status" aria-live="off"><span key={i}>{lines[i % lines.length]}</span></p>;
+}
+
+export function Dashboard({ stats, busy, jobType = "backup", go, onJob }: { stats: Stats | null; busy: boolean; jobType?: string; go: Go; onJob: () => void }) {
   const peak = stats ? Math.max(...stats.history.map(h => h.bytes), 1) : 1;
   const bar = useGrow(".ledger-bar i", "x", [stats?.total_bytes, stats?.backed_bytes, stats?.pending_bytes]);
   const chart = useGrow(".bar-col i", "y", [stats?.history.length, peak]);
@@ -19,7 +33,8 @@ export function Dashboard({ stats, busy, go, onJob }: { stats: Stats | null; bus
       <button className="primary" onClick={() => go("settings")}>Open Settings</button>
     </section>
   );
-  const allDone = stats.backed_files > 0 && stats.pending_files === 0 && stats.review_files === 0;
+  // Not while a job runs: files are marked backed up one by one, so "waiting" can reach 0 before the job has finished.
+  const allDone = !busy && stats.backed_files > 0 && stats.pending_files === 0 && stats.review_files === 0;
   const verify = async () => { try { await api("/api/verify", "POST"); onJob(); } catch (e) { await tell("Could not start the check: " + (e as Error).message); } };
   const parts = [
     { key: "done", label: "Backed up", bytes: stats.backed_bytes, files: stats.backed_files, cls: "seg-done", go: "selected" as const },
@@ -43,6 +58,7 @@ export function Dashboard({ stats, busy, go, onJob }: { stats: Stats | null; bus
           </div>
         </div>
         {allDone && <p className="all-done" role="status"><Icon name="check" />Everything is backed up. Nothing new or changed since the last scan.</p>}
+        {busy && <Chatter type={jobType} />}
         <div className="ledger-bar" ref={bar} role="img" aria-label={parts.map(p => `${p.label} ${fmt(p.bytes)}`).join(", ")}>
           {parts.map(p => <i key={p.key} className={p.cls + (p.bytes ? " has" : "")} style={{ flexGrow: p.bytes }} />)}
         </div>

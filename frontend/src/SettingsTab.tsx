@@ -51,6 +51,11 @@ export function SettingsTab({ onSaved, appearance }: { onSaved: () => void; appe
     setChecking(false);
   };
   useEffect(() => { api<UpdateInfo>("/api/update").then(setVer).catch(() => { /* offline */ }); }, []);
+  useEffect(() => {                                                    // the name was changed from the dialog: show it here at once
+    const f = (e: Event) => setS(c => c && { ...c, pc_name: String((e as CustomEvent).detail) });
+    window.addEventListener("pc-renamed", f);
+    return () => window.removeEventListener("pc-renamed", f);
+  }, []);
   if (loadErr) return <section className="block"><p className="err">Could not load the settings: {loadErr}</p><div><button onClick={() => setAgain(n => n + 1)}>Try again</button></div></section>;
   if (!s) return (
     <div className="panel" aria-busy="true"><div className="panel-nav skel" aria-hidden="true" /><div className="panel-body"><p className="sub">Loading the settings…</p></div></div>
@@ -77,7 +82,9 @@ export function SettingsTab({ onSaved, appearance }: { onSaved: () => void; appe
             <Row wide title="Backup drives" desc="Files are copied to every drive listed, for example an external disk. A drive is remembered by its serial number, so it is found again if Windows gives it another letter.">
               <PathList bare title="Backup drives" hint="" items={s.destinations} onChange={v => set({ destinations: v })} />
             </Row>
-            <Row title={`This PC: ${s.pc_name}`} desc="Backups go into a folder named after this PC on each drive, so many PCs can share one drive." />
+            <Row title={`This PC: ${s.pc_name}`} desc="Backups go into a folder named after this PC on each drive, so many PCs can share one drive. Renaming also renames that folder on the drive.">
+              <button onClick={() => window.dispatchEvent(new Event("rename-pc"))}>Rename this PC</button>
+            </Row>
           </Cluster>
           <Cluster title="What gets looked at">
             <Row title="Scan the whole PC" desc={s.whole_pc ? `Every internal drive: ${s.scan_roots.join(", ")}. Then click Scan files.` : "Off: only the folders below are scanned."}>
